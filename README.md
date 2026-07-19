@@ -5,11 +5,13 @@ baseline. Eight independent FastAPI containers train a PyTorch CNN on disjoint
 MNIST partitions. Each client exchanges models only with its two logical ring
 neighbors:
 
-```text
+<!-- ```text
 client-0 -- client-1 -- client-2 -- client-3
    |                                  |
 client-7 -- client-6 -- client-5 -- client-4
-```
+``` -->
+
+<img src="./imgs/MNIST topo.png" onerror="this.onerror=null; this.src='https://github.com/jjakob10/asyncDFL/blob/main/imgs/client_log.png';" alt="topology"/>
 
 Client 7 is the head only for starting the experiment. It is not an aggregation
 server. Once started, all eight clients train and aggregate independently.
@@ -49,8 +51,7 @@ docker compose build
 docker compose up
 ```
 
-Compose waits for clients 0 through 6 to become healthy before it starts client
-7. Five seconds after client 7 becomes ready, it creates a run ID and begins the
+Compose waits for clients 0 through 6 to become healthy before it starts client 7. Five seconds after client 7 becomes ready, it creates a run ID and begins the
 one-time start flood.
 
 In another terminal, monitor all clients:
@@ -91,30 +92,30 @@ accepts only one run ID.
 
 The most useful environment variables are:
 
-| Variable | Default | Meaning |
-|---|---:|---|
-| `CLIENT_ID` | derived from name | Numeric ID from 0 to 7 |
-| `CLIENT_NAME` | `client-0` | Node name; a trailing integer is parsed as the ID |
-| `CLIENT_COUNT` | `8` | Number of clients |
-| `HEAD_CLIENT_ID` | `7` | Client that creates the initial run ID |
-| `NEIGHBORS` | derived | Comma-separated neighbor base URLs |
-| `ROUNDS` | `10` | Decentralized training rounds |
-| `LOCAL_EPOCHS` | `1` | Local epochs per round |
-| `BATCH_SIZE` | `64` | Training batch size |
-| `LEARNING_RATE` | `0.01` | SGD learning rate |
-| `MOMENTUM` | `0.9` | SGD momentum |
-| `PARTITION_MODE` | `iid` | `iid` or `dirichlet` |
-| `DIRICHLET_ALPHA` | `0.5` | Label-skew strength; smaller is more heterogeneous |
-| `MIN_PARTITION_SIZE` | `100` | Minimum examples in a Dirichlet shard |
-| `SEED` | `42` | Model, partition, and loader seed |
-| `REQUEST_TIMEOUT` | `5` | Per-request timeout in seconds |
-| `REQUEST_RETRIES` | `3` | Attempts for start/model requests |
-| `RETRY_DELAY` | `1` | Seconds between attempts |
-| `HEAD_START_DELAY` | `5` | Head delay before creating the run |
-| `RESULTS_DIR` | `/results` | Metrics and final-model directory |
-| `MAX_TRAIN_SAMPLES` | `0` | Optional global training cap; 0 means full MNIST |
-| `MAX_TEST_SAMPLES` | `0` | Optional test cap; 0 means full MNIST |
-| `TORCH_NUM_THREADS` | `1` | CPU threads per client; prevents eight-way oversubscription |
+| Variable             |           Default | Meaning                                                     |
+| -------------------- | ----------------: | ----------------------------------------------------------- |
+| `CLIENT_ID`          | derived from name | Numeric ID from 0 to 7                                      |
+| `CLIENT_NAME`        |        `client-0` | Node name; a trailing integer is parsed as the ID           |
+| `CLIENT_COUNT`       |               `8` | Number of clients                                           |
+| `HEAD_CLIENT_ID`     |               `7` | Client that creates the initial run ID                      |
+| `NEIGHBORS`          |           derived | Comma-separated neighbor base URLs                          |
+| `ROUNDS`             |              `10` | Decentralized training rounds                               |
+| `LOCAL_EPOCHS`       |               `1` | Local epochs per round                                      |
+| `BATCH_SIZE`         |              `64` | Training batch size                                         |
+| `LEARNING_RATE`      |            `0.01` | SGD learning rate                                           |
+| `MOMENTUM`           |             `0.9` | SGD momentum                                                |
+| `PARTITION_MODE`     |             `iid` | `iid` or `dirichlet`                                        |
+| `DIRICHLET_ALPHA`    |             `0.5` | Label-skew strength; smaller is more heterogeneous          |
+| `MIN_PARTITION_SIZE` |             `100` | Minimum examples in a Dirichlet shard                       |
+| `SEED`               |              `42` | Model, partition, and loader seed                           |
+| `REQUEST_TIMEOUT`    |               `5` | Per-request timeout in seconds                              |
+| `REQUEST_RETRIES`    |               `3` | Attempts for start/model requests                           |
+| `RETRY_DELAY`        |               `1` | Seconds between attempts                                    |
+| `HEAD_START_DELAY`   |               `5` | Head delay before creating the run                          |
+| `RESULTS_DIR`        |        `/results` | Metrics and final-model directory                           |
+| `MAX_TRAIN_SAMPLES`  |               `0` | Optional global training cap; 0 means full MNIST            |
+| `MAX_TEST_SAMPLES`   |               `0` | Optional test cap; 0 means full MNIST                       |
+| `TORCH_NUM_THREADS`  |               `1` | CPU threads per client; prevents eight-way oversubscription |
 
 If `NEIGHBORS` is omitted, the service derives its ring neighbors from
 `CLIENT_ID`, `CLIENT_COUNT`, `GNS3_IP_PREFIX` (default `10.10.0.`), and
@@ -129,7 +130,7 @@ Returns readiness and client ID.
 ### `POST /start`
 
 ```json
-{"run_id": "experiment-2026-07-17"}
+{ "run_id": "experiment-2026-07-17" }
 ```
 
 Returns HTTP 202 for the first or a duplicate delivery. Returns HTTP 409 if the
@@ -224,16 +225,16 @@ neighbor URLs enforce the application-level ring.
 With each container stopped, right-click it and choose **Edit config**. Configure
 `eth0` using this table:
 
-| Node | Address | Ring neighbors |
-|---|---|---|
-| client-0 | `10.10.0.10/24` | `.17`, `.11` |
-| client-1 | `10.10.0.11/24` | `.10`, `.12` |
-| client-2 | `10.10.0.12/24` | `.11`, `.13` |
-| client-3 | `10.10.0.13/24` | `.12`, `.14` |
-| client-4 | `10.10.0.14/24` | `.13`, `.15` |
-| client-5 | `10.10.0.15/24` | `.14`, `.16` |
-| client-6 | `10.10.0.16/24` | `.15`, `.17` |
-| client-7 | `10.10.0.17/24` | `.16`, `.10` |
+| Node     | Address         | Ring neighbors |
+| -------- | --------------- | -------------- |
+| client-0 | `10.10.0.10/24` | `.17`, `.11`   |
+| client-1 | `10.10.0.11/24` | `.10`, `.12`   |
+| client-2 | `10.10.0.12/24` | `.11`, `.13`   |
+| client-3 | `10.10.0.13/24` | `.12`, `.14`   |
+| client-4 | `10.10.0.14/24` | `.13`, `.15`   |
+| client-5 | `10.10.0.15/24` | `.14`, `.16`   |
+| client-6 | `10.10.0.16/24` | `.15`, `.17`   |
+| client-7 | `10.10.0.17/24` | `.16`, `.10`   |
 
 For example, client 0's `/etc/network/interfaces` entry is:
 
