@@ -1,0 +1,2 @@
+"""Decentralized federated learning client."""
+
