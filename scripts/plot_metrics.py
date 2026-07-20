@@ -1,0 +1,370 @@
+"""Plot per-client training and test metrics from one or more experiments."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import re
+import sys
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Iterable, Sequence
+
+import matplotlib
+
+matplotlib.use("Agg")
+from matplotlib import pyplot as plt
+
+
+CLIENT_FILE_PATTERN = re.compile(r"client_(\d+)_metrics\.jsonl$")
+PHASES = ("train", "test")
+
+
+class MetricsPlotError(ValueError):
+    """Raised when experiment metrics cannot be loaded or plotted."""
+
+
+@dataclass(frozen=True)
+class MetricRecord:
+    client_id: int
+    model_version: int
+    time: datetime
+    values: dict[str, dict[str, float]]
+
+
+@dataclass(frozen=True)
+class Experiment:
+    path: Path
+    label: str
+    clients: dict[int, list[MetricRecord]]
+
+
+@dataclass(frozen=True)
+class PlotSeries:
+    experiment_index: int
+    label: str
+    phase: str
+    x: list[int | float]
+    y: list[float]
+
+
+def _parse_timestamp(value: Any, location: str) -> datetime:
+    if not isinstance(value, str):
+        raise MetricsPlotError(f"{location}: 'time' must be an ISO-8601 string")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise MetricsPlotError(
+            f"{location}: invalid ISO-8601 timestamp {value!r}"
+        ) from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise MetricsPlotError(f"{location}: timestamp must include a timezone")
+    return parsed
+
+
+def _parse_integer(value: Any, field: str, location: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise MetricsPlotError(f"{location}: '{field}' must be an integer")
+    return value
+
+
+def _parse_phase(
+    record: dict[str, Any], phase: str, location: str
+) -> dict[str, float]:
+    raw_values = record.get(phase)
+    if raw_values is None:
+        return {}
+    if not isinstance(raw_values, dict):
+        raise MetricsPlotError(f"{location}: '{phase}' must be an object")
+
+    values: dict[str, float] = {}
+    for metric, raw_value in raw_values.items():
+        if not isinstance(metric, str) or not metric:
+            raise MetricsPlotError(
+                f"{location}: {phase} metric names must be non-empty strings"
+            )
+        if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
+            raise MetricsPlotError(f"{location}: {phase}.{metric} must be numeric")
+        value = float(raw_value)
+        if not math.isfinite(value):
+            raise MetricsPlotError(f"{location}: {phase}.{metric} must be finite")
+        values[metric] = value
+    return values
+
+
+def load_metrics_file(path: Path, expected_client_id: int) -> list[MetricRecord]:
+    records: list[MetricRecord] = []
+    try:
+        stream = path.open("r", encoding="utf-8")
+    except OSError as exc:
+        raise MetricsPlotError(f"cannot read metrics file {path}: {exc}") from exc
+
+    with stream:
+        for line_number, line in enumerate(stream, start=1):
+            if not line.strip():
+                continue
+            location = f"{path}:{line_number}"
+            try:
+                raw_record = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise MetricsPlotError(
+                    f"{location}: malformed JSON: {exc.msg}"
+                ) from exc
+            if not isinstance(raw_record, dict):
+                raise MetricsPlotError(f"{location}: each line must contain an object")
+
+            client_id = _parse_integer(
+                raw_record.get("client_id"), "client_id", location
+            )
+            if client_id != expected_client_id:
+                raise MetricsPlotError(
+                    f"{location}: client_id {client_id} does not match "
+                    f"filename client ID {expected_client_id}"
+                )
+            model_version = _parse_integer(
+                raw_record.get("model_version"), "model_version", location
+            )
+            timestamp = _parse_timestamp(raw_record.get("time"), location)
+            values = {
+                phase: _parse_phase(raw_record, phase, location) for phase in PHASES
+            }
+            records.append(
+                MetricRecord(
+                    client_id=client_id,
+                    model_version=model_version,
+                    time=timestamp,
+                    values=values,
+                )
+            )
+
+    if not records:
+        raise MetricsPlotError(f"{path}: metrics file contains no records")
+    return records
+
+
+def _experiment_labels(paths: Sequence[Path]) -> list[str]:
+    base_labels = [path.resolve().name or str(path.resolve()) for path in paths]
+    totals = {label: base_labels.count(label) for label in set(base_labels)}
+    occurrences: dict[str, int] = {}
+    labels: list[str] = []
+    for label in base_labels:
+        occurrences[label] = occurrences.get(label, 0) + 1
+        if totals[label] > 1:
+            labels.append(f"{label} ({occurrences[label]})")
+        else:
+            labels.append(label)
+    return labels
+
+
+def load_experiments(paths: Sequence[Path]) -> list[Experiment]:
+    labels = _experiment_labels(paths)
+    experiments: list[Experiment] = []
+    for path, label in zip(paths, labels):
+        if not path.exists():
+            raise MetricsPlotError(f"experiment directory does not exist: {path}")
+        if not path.is_dir():
+            raise MetricsPlotError(f"experiment path is not a directory: {path}")
+
+        clients: dict[int, list[MetricRecord]] = {}
+        for metrics_path in sorted(path.glob("client_*_metrics.jsonl")):
+            match = CLIENT_FILE_PATTERN.fullmatch(metrics_path.name)
+            if match is None:
+                continue
+            client_id = int(match.group(1))
+            clients[client_id] = load_metrics_file(metrics_path, client_id)
+
+        if not clients:
+            raise MetricsPlotError(
+                f"{path}: no client_<id>_metrics.jsonl files were found"
+            )
+        experiments.append(Experiment(path=path, label=label, clients=clients))
+    return experiments
+
+
+def selected_phases(phase: str) -> tuple[str, ...]:
+    return PHASES if phase == "both" else (phase,)
+
+
+def available_metrics(
+    experiments: Sequence[Experiment], client_id: int, phases: Iterable[str]
+) -> set[str]:
+    metrics: set[str] = set()
+    for experiment in experiments:
+        for record in experiment.clients.get(client_id, []):
+            for phase in phases:
+                metrics.update(record.values[phase])
+    return metrics
+
+
+def build_series(
+    experiments: Sequence[Experiment],
+    client_id: int,
+    metric: str,
+    phase: str,
+    x_axis: str,
+) -> tuple[list[PlotSeries], list[str]]:
+    series: list[PlotSeries] = []
+    warnings: list[str] = []
+    phases = selected_phases(phase)
+
+    for experiment_index, experiment in enumerate(experiments):
+        records = experiment.clients.get(client_id)
+        if records is None:
+            warnings.append(
+                f"{experiment.label}: client {client_id} is unavailable; "
+                f"omitting it from {metric}"
+            )
+            continue
+        first_time = min(record.time for record in records)
+        for selected_phase in phases:
+            points: list[tuple[int | float, float]] = []
+            for record in records:
+                if metric not in record.values[selected_phase]:
+                    continue
+                if x_axis == "model_version":
+                    x_value: int | float = record.model_version
+                else:
+                    x_value = (record.time - first_time).total_seconds()
+                points.append((x_value, record.values[selected_phase][metric]))
+
+            if not points:
+                warnings.append(
+                    f"{experiment.label}: client {client_id} has no "
+                    f"{selected_phase}.{metric} values; omitting that series"
+                )
+                continue
+            points.sort(key=lambda point: point[0])
+            series.append(
+                PlotSeries(
+                    experiment_index=experiment_index,
+                    label=experiment.label,
+                    phase=selected_phase,
+                    x=[point[0] for point in points],
+                    y=[point[1] for point in points],
+                )
+            )
+    return series, warnings
+
+
+def _safe_metric_name(metric: str) -> str:
+    safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", metric).strip("._")
+    return safe_name or "metric"
+
+
+def plot_metrics(
+    experiments: Sequence[Experiment],
+    output_dir: Path,
+    x_axis: str,
+    phase: str,
+) -> list[Path]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    client_ids = sorted(
+        {client_id for experiment in experiments for client_id in experiment.clients}
+    )
+    colors = plt.get_cmap("tab10")
+    line_styles = {"train": "-", "test": "--"}
+    written: list[Path] = []
+    emitted_warnings: set[str] = set()
+
+    for client_id in client_ids:
+        metrics = sorted(
+            available_metrics(experiments, client_id, selected_phases(phase))
+        )
+        for metric in metrics:
+            plot_series, warnings = build_series(
+                experiments, client_id, metric, phase, x_axis
+            )
+            for warning in warnings:
+                if warning not in emitted_warnings:
+                    print(f"warning: {warning}", file=sys.stderr)
+                    emitted_warnings.add(warning)
+            if not plot_series:
+                continue
+
+            figure, axis = plt.subplots(figsize=(10, 6))
+            for item in plot_series:
+                axis.plot(
+                    item.x,
+                    item.y,
+                    color=colors(item.experiment_index % colors.N),
+                    linestyle=line_styles[item.phase],
+                    marker="o",
+                    markersize=3,
+                    label=f"{item.label} — {item.phase}",
+                )
+            axis.set_title(f"Client {client_id} — {metric}")
+            axis.set_xlabel(
+                "Model version" if x_axis == "model_version" else "Elapsed time (s)"
+            )
+            axis.set_ylabel(metric)
+            axis.grid(True, alpha=0.3)
+            axis.legend()
+            figure.tight_layout()
+
+            output_path = (
+                output_dir / f"client_{client_id}_{_safe_metric_name(metric)}.png"
+            )
+            figure.savefig(output_path, dpi=150)
+            plt.close(figure)
+            written.append(output_path)
+
+    if not written:
+        raise MetricsPlotError(
+            f"no usable metrics were found for the selected phase '{phase}'"
+        )
+    return written
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Plot client metrics. The final path is the output directory and all "
+            "preceding paths are experiment directories."
+        )
+    )
+    parser.add_argument(
+        "--x-axis",
+        choices=("model_version", "time"),
+        default="model_version",
+        help="X axis to plot (default: model_version)",
+    )
+    parser.add_argument(
+        "--phase",
+        choices=("train", "test", "both"),
+        default="both",
+        help="metric phase to plot (default: both)",
+    )
+    parser.add_argument(
+        "paths",
+        nargs="+",
+        metavar="PATH",
+        help="one or more experiment directories followed by the output directory",
+    )
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if len(args.paths) < 2:
+        parser.error(
+            "provide at least one experiment directory and an output directory"
+        )
+
+    experiment_paths = [Path(path) for path in args.paths[:-1]]
+    output_dir = Path(args.paths[-1])
+    try:
+        experiments = load_experiments(experiment_paths)
+        written = plot_metrics(experiments, output_dir, args.x_axis, args.phase)
+    except (MetricsPlotError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    print(f"wrote {len(written)} chart(s) to {output_dir}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

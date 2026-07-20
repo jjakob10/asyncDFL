@@ -71,6 +71,27 @@ curl -o client-3.pt http://localhost:8003/model
 Host ports 8000 through 8007 correspond to clients 0 through 7. Per-round JSONL
 files and final state dictionaries are written to `results/`.
 
+## Plot experiment metrics
+
+Install the project dependencies, then pass one or more experiment directories
+followed by the output directory:
+
+```bash
+python scripts/plot_metrics.py results outputs/metrics
+python scripts/plot_metrics.py run-iid run-dirichlet outputs/comparison
+```
+
+The script writes one PNG per client and metric. By default, each chart plots
+both training and test values against the model version. Select a different
+phase or use elapsed time in seconds for the X axis with:
+
+```bash
+python scripts/plot_metrics.py --phase train results outputs/train
+python scripts/plot_metrics.py --phase test results outputs/test
+python scripts/plot_metrics.py --phase both --x-axis time \
+  run-iid run-dirichlet outputs/comparison-time
+```
+
 For a quick smoke test, put the following in `.env`:
 
 ```dotenv
