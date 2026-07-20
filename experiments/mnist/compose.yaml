@@ -1,4 +1,5 @@
 x-common-environment: &common-environment
+  TRAINER_MODULE: "${TRAINER_MODULE:-experiments.mnist.trainer}"
   CLIENT_COUNT: "8"
   HEAD_CLIENT_ID: "7"
   ROUNDS: "${ROUNDS:-10}"
@@ -19,11 +20,9 @@ x-common-environment: &common-environment
 
 x-client: &client
   image: dfl-mnist:latest
-  build:
-    context: .
   restart: "no"
   volumes:
-    - ./results:/results
+    - ../../results/mnist:/results
   healthcheck:
     test:
       - CMD
@@ -38,6 +37,9 @@ x-client: &client
 services:
   client-0:
     <<: *client
+    build:
+      context: ../..
+      dockerfile: experiments/mnist/Dockerfile
     ports:
       - "8000:8000"
     environment:

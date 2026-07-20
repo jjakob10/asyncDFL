@@ -23,6 +23,7 @@ def _client_id(value: str) -> int:
 class Settings:
     client_id: int
     client_name: str
+    trainer_module: str = "experiments.mnist.trainer"
     client_count: int = 8
     head_client_id: int = 7
     neighbors: tuple[str, ...] = ()
@@ -78,6 +79,9 @@ class Settings:
         settings = cls(
             client_id=client_id,
             client_name=raw_name,
+            trainer_module=os.getenv(
+                "TRAINER_MODULE", "experiments.mnist.trainer"
+            ).strip(),
             client_count=client_count,
             head_client_id=int(os.getenv("HEAD_CLIENT_ID", "7")),
             neighbors=neighbors,
@@ -106,6 +110,8 @@ class Settings:
         return settings
 
     def validate(self) -> None:
+        if not self.trainer_module:
+            raise ValueError("TRAINER_MODULE must not be empty")
         if not 0 <= self.client_id < self.client_count:
             raise ValueError("client_id must be between 0 and client_count - 1")
         if not 0 <= self.head_client_id < self.client_count:

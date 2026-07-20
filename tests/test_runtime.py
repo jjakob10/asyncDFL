@@ -2,22 +2,47 @@ from pathlib import Path
 import time
 
 import torch
+from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
 from app.config import Settings
 from app.federation import clone_state_dict
-from app.learning import DataBundle, MnistCNN
 from app.runtime import ClientRuntime
+from app.training import DataBundle
 
 
 def tiny_data() -> DataBundle:
-    images = torch.zeros(4, 1, 28, 28)
+    images = torch.zeros(4, 1)
     labels = torch.zeros(4, dtype=torch.long)
     loader = DataLoader(TensorDataset(images, labels), batch_size=2)
     return DataBundle(loader, loader, sample_count=4)
 
 
-def test_runtime_completes_and_writes_results(monkeypatch, tmp_path: Path) -> None:
+class TinyTrainer:
+    def __init__(self) -> None:
+        self.load_calls = 0
+        self.train_calls = 0
+        self.evaluate_calls = 0
+
+    def create_model(self) -> nn.Module:
+        return nn.Linear(1, 2)
+
+    def load_data(self, settings: Settings) -> DataBundle:
+        self.load_calls += 1
+        return tiny_data()
+
+    def train_local(self, base, loader, settings):
+        self.train_calls += 1
+        return clone_state_dict(base), {"loss": 1.0, "accuracy": 0.5}
+
+    def evaluate(self, state, loader):
+        self.evaluate_calls += 1
+        return {"loss": 0.8, "accuracy": 0.6}
+
+
+def test_runtime_delegates_to_injected_trainer_and_writes_results(
+    tmp_path: Path,
+) -> None:
     settings = Settings(
         client_id=0,
         client_name="client-0",
@@ -25,16 +50,8 @@ def test_runtime_completes_and_writes_results(monkeypatch, tmp_path: Path) -> No
         rounds=2,
         results_dir=str(tmp_path),
     )
-    runtime = ClientRuntime(settings, tiny_data())
-
-    def fake_train(base, loader, config):
-        updated = clone_state_dict(base)
-        return updated, {"loss": 1.0, "accuracy": 0.5}
-
-    monkeypatch.setattr("app.runtime.train_local", fake_train)
-    monkeypatch.setattr(
-        "app.runtime.evaluate", lambda state, loader: {"loss": 0.8, "accuracy": 0.6}
-    )
+    trainer = TinyTrainer()
+    runtime = ClientRuntime(settings, trainer=trainer)
 
     assert runtime.start("run-1") == "started"
     assert runtime.start("run-1") == "already_started"
@@ -45,6 +62,9 @@ def test_runtime_completes_and_writes_results(monkeypatch, tmp_path: Path) -> No
     assert status["state"] == "completed"
     assert status["current_round"] == 2
     assert status["model_version"] == 2
+    assert trainer.load_calls == 1
+    assert trainer.train_calls == 2
+    assert trainer.evaluate_calls == 2
     assert (tmp_path / "client_0_metrics.jsonl").read_text().count("\n") == 2
     assert (tmp_path / "client_0_final.pt").exists()
 
@@ -57,8 +77,9 @@ def test_unavailable_neighbor_is_recorded_and_skipped(monkeypatch, tmp_path: Pat
         request_retries=1,
         results_dir=str(tmp_path),
     )
-    runtime = ClientRuntime(settings, tiny_data())
-    reference = clone_state_dict(MnistCNN().state_dict())
+    trainer = TinyTrainer()
+    runtime = ClientRuntime(settings, tiny_data(), trainer)
+    reference = clone_state_dict(trainer.create_model().state_dict())
 
     def fail(*args, **kwargs):
         raise RuntimeError("unreachable")
@@ -86,7 +107,11 @@ def test_start_flood_visits_eight_node_ring_once(monkeypatch, tmp_path: Path) ->
             ),
             results_dir=str(tmp_path),
         )
-        runtimes[f"http://client-{client_id}:8000"] = ClientRuntime(settings, tiny_data())
+        runtimes[f"http://client-{client_id}:8000"] = ClientRuntime(
+            settings,
+            tiny_data(),
+            TinyTrainer(),
+        )
 
     for runtime in runtimes.values():
         client_id = runtime.settings.client_id

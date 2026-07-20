@@ -20,8 +20,8 @@ from app.federation import (
     fedavg,
     serialize_state_dict,
 )
-from app.learning import DataBundle, MnistCNN, evaluate, load_data, seed_everything, train_local
 from app.metrics import MetricsWriter
+from app.training import DataBundle, Trainer, load_trainer, seed_everything
 
 LOGGER = logging.getLogger("dfl.client")
 
@@ -31,14 +31,22 @@ def _utc_now() -> str:
 
 
 class ClientRuntime:
-    def __init__(self, settings: Settings, data: DataBundle | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        data: DataBundle | None = None,
+        trainer: Trainer | None = None,
+    ) -> None:
         self.settings = settings
         seed_everything(settings.seed)
         torch.set_num_threads(settings.torch_num_threads)
-        self.data = data or load_data(settings)
+        self.trainer = trainer or load_trainer(settings.trainer_module)
+        self.data = data or self.trainer.load_data(settings)
         self.metrics_writer = MetricsWriter(settings.results_dir, settings.client_id)
         self._lock = threading.RLock()
-        self._model: StateDict = clone_state_dict(MnistCNN().state_dict())
+        self._model: StateDict = clone_state_dict(
+            self.trainer.create_model().state_dict()
+        )
         self._run_id: str | None = None
         self._state = "waiting"
         self._model_version = 0
@@ -183,7 +191,7 @@ class ClientRuntime:
                 with self._lock:
                     base_state = clone_state_dict(self._model)
                     error_cursor = len(self._errors)
-                local_state, train_metrics = train_local(
+                local_state, train_metrics = self.trainer.train_local(
                     base_state,
                     self.data.train_loader,
                     self.settings,
@@ -201,7 +209,9 @@ class ClientRuntime:
                         neighbor_versions.append(metadata)
 
                 aggregated = fedavg(weighted_states)
-                test_metrics = evaluate(aggregated, self.data.test_loader)
+                test_metrics = self.trainer.evaluate(
+                    aggregated, self.data.test_loader
+                )
                 with self._lock:
                     round_errors = list(self._errors[error_cursor:])
                 record = {

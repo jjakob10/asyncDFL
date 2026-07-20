@@ -4,9 +4,10 @@
 
 Application code lives in `app/`. `main.py` defines the FastAPI surface, while
 `runtime.py` coordinates start propagation and decentralized rounds.
-`learning.py` owns MNIST partitioning, training, and evaluation;
+`training.py` defines the pluggable trainer contract and shared partitioning;
 `federation.py` handles model serialization and FedAvg; `config.py` maps
-environment variables into validated settings.
+environment variables into validated settings. Dataset/model implementations
+and their container definitions live under `experiments/<name>/`.
 
 Tests are under `tests/` and mirror these responsibilities. Operational helpers
 live in `scripts/`, container definitions are in `Dockerfile` and
@@ -21,13 +22,17 @@ live in `scripts/`, container definitions are in `Dockerfile` and
   dependencies.
 - `python -m pytest` runs the complete quiet pytest suite configured by
   `pytest.ini`.
-- `docker compose build` builds the CPU-only PyTorch image and embeds MNIST.
-- `docker compose up -d` starts the eight-client ring; use
+- `docker compose -f experiments/mnist/compose.yaml build` builds the CPU-only
+  MNIST image; substitute `cifar10` to build that experiment.
+- `docker compose -f experiments/mnist/compose.yaml up -d` starts the
+  eight-client ring; use
   `python scripts/wait_for_run.py` to monitor completion.
-- `docker compose down` removes the experiment containers and network.
+- `docker compose -f experiments/mnist/compose.yaml down` removes the experiment
+  containers and network.
 
-Copy `.env.example` to `.env` to override rounds, partition mode, sample caps,
-or request behavior. Use capped samples and one round for quick smoke tests.
+Copy an experiment's `.env.example` to `.env` to override rounds, partition
+mode, sample caps, or request behavior. Use capped samples and one round for
+quick smoke tests.
 
 ## Coding Style & Naming Conventions
 

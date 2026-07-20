@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import http.client
 import time
+import urllib.error
 import urllib.request
 
 
@@ -14,7 +16,12 @@ def status(port: int) -> dict:
 
 def main() -> None:
     while True:
-        clients = [status(8000 + client_id) for client_id in range(8)]
+        try:
+            clients = [status(8000 + client_id) for client_id in range(8)]
+        except (http.client.HTTPException, OSError, urllib.error.URLError) as exc:
+            print(f"waiting for all client APIs: {exc}", flush=True)
+            time.sleep(5)
+            continue
         summary = " | ".join(
             f"{item['client_id']}:{item['state']} "
             f"{item['current_round']}/{item['total_rounds']}"
@@ -31,4 +38,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

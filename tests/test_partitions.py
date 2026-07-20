@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from app.learning import make_partitions
+from app.training import make_partitions
 
 
 def assert_valid_partition(parts: list[np.ndarray], size: int, clients: int) -> None:
@@ -39,4 +39,3 @@ def test_dirichlet_partition_is_complete_disjoint_and_reproducible() -> None:
 def test_partition_rejects_impossible_minimum() -> None:
     with pytest.raises(ValueError, match="too small"):
         make_partitions(np.arange(20) % 2, 8, "iid", seed=42, min_size=3)
-

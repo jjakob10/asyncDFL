@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import random
-from dataclasses import dataclass
-
 import numpy as np
 import torch
 from torch import nn
@@ -11,6 +8,7 @@ from torchvision import datasets, transforms
 
 from app.config import Settings
 from app.federation import StateDict
+from app.training import DataBundle, make_partitions
 
 
 class MnistCNN(nn.Module):
@@ -33,63 +31,8 @@ class MnistCNN(nn.Module):
         return self.network(inputs)
 
 
-def seed_everything(seed: int) -> None:
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-
-
-def make_partitions(
-    labels: np.ndarray,
-    client_count: int,
-    mode: str,
-    seed: int,
-    alpha: float = 0.5,
-    min_size: int = 100,
-    max_attempts: int = 1_000,
-) -> list[np.ndarray]:
-    labels = np.asarray(labels, dtype=np.int64)
-    if client_count < 1:
-        raise ValueError("client_count must be positive")
-    if labels.size < client_count * min_size:
-        raise ValueError("dataset is too small for the requested minimum partition size")
-
-    if mode == "iid":
-        rng = np.random.default_rng(seed)
-        return [part.astype(np.int64) for part in np.array_split(rng.permutation(labels.size), client_count)]
-    if mode != "dirichlet":
-        raise ValueError(f"unknown partition mode: {mode}")
-    if alpha <= 0:
-        raise ValueError("alpha must be positive")
-
-    classes = np.unique(labels)
-    for attempt in range(max_attempts):
-        rng = np.random.default_rng(seed + attempt)
-        partitions: list[list[int]] = [[] for _ in range(client_count)]
-        for label in classes:
-            indices = np.flatnonzero(labels == label)
-            rng.shuffle(indices)
-            probabilities = rng.dirichlet(np.full(client_count, alpha))
-            counts = rng.multinomial(len(indices), probabilities)
-            cursor = 0
-            for client_id, count in enumerate(counts):
-                partitions[client_id].extend(indices[cursor : cursor + count].tolist())
-                cursor += count
-        if min(map(len, partitions)) >= min_size:
-            result = []
-            for values in partitions:
-                array = np.asarray(values, dtype=np.int64)
-                rng.shuffle(array)
-                result.append(array)
-            return result
-    raise RuntimeError(f"could not create a Dirichlet partition with min_size={min_size}")
-
-
-@dataclass
-class DataBundle:
-    train_loader: DataLoader
-    test_loader: DataLoader
-    sample_count: int
+def create_model() -> nn.Module:
+    return MnistCNN()
 
 
 def load_data(settings: Settings) -> DataBundle:
@@ -113,7 +56,9 @@ def load_data(settings: Settings) -> DataBundle:
     candidate_indices = np.arange(len(labels))
     if settings.max_train_samples:
         rng = np.random.default_rng(settings.seed)
-        candidate_indices = rng.permutation(candidate_indices)[: settings.max_train_samples]
+        candidate_indices = rng.permutation(candidate_indices)[
+            : settings.max_train_samples
+        ]
         labels = labels[candidate_indices]
 
     partitions = make_partitions(
@@ -122,15 +67,18 @@ def load_data(settings: Settings) -> DataBundle:
         settings.partition_mode,
         settings.seed,
         settings.dirichlet_alpha,
-        min(settings.min_partition_size, max(1, len(labels) // settings.client_count // 2)),
+        min(
+            settings.min_partition_size,
+            max(1, len(labels) // settings.client_count // 2),
+        ),
     )
     local_indices = candidate_indices[partitions[settings.client_id]]
     train_subset = Subset(train_dataset, local_indices.tolist())
 
     if settings.max_test_samples:
-        test_indices = np.random.default_rng(settings.seed).permutation(len(test_dataset))[
-            : settings.max_test_samples
-        ]
+        test_indices = np.random.default_rng(settings.seed).permutation(
+            len(test_dataset)
+        )[: settings.max_test_samples]
         test_dataset = Subset(test_dataset, test_indices.tolist())
 
     generator = torch.Generator().manual_seed(settings.seed + settings.client_id)
@@ -155,7 +103,7 @@ def train_local(
     train_loader: DataLoader,
     settings: Settings,
 ) -> tuple[StateDict, dict[str, float]]:
-    model = MnistCNN()
+    model = create_model()
     model.load_state_dict(base_state)
     model.train()
     optimizer = torch.optim.SGD(
@@ -180,7 +128,10 @@ def train_local(
             total_correct += (outputs.argmax(dim=1) == targets).sum().item()
             total_seen += batch_size
     return (
-        {name: tensor.detach().cpu() for name, tensor in model.state_dict().items()},
+        {
+            name: tensor.detach().cpu()
+            for name, tensor in model.state_dict().items()
+        },
         {
             "loss": total_loss / max(total_seen, 1),
             "accuracy": total_correct / max(total_seen, 1),
@@ -190,7 +141,7 @@ def train_local(
 
 @torch.inference_mode()
 def evaluate(state: StateDict, test_loader: DataLoader) -> dict[str, float]:
-    model = MnistCNN()
+    model = create_model()
     model.load_state_dict(state)
     model.eval()
     criterion = nn.CrossEntropyLoss(reduction="sum")

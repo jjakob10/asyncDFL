@@ -1,98 +1,116 @@
-# Decentralized Federated Learning on GNS3
+# Decentralized Federated Learning Experiments
 
-This repository is a deliberately small decentralized federated learning (DFL)
-baseline. Eight independent FastAPI containers train a PyTorch CNN on disjoint
-MNIST partitions. Each client exchanges models only with its two logical ring
-neighbors:
+This repository provides a generic decentralized federated learning client and
+pluggable experiment trainers. Eight independent FastAPI clients form a logical
+ring, train on disjoint dataset partitions, and exchange model snapshots only
+with their two neighbors.
 
-<!-- ```text
-client-0 -- client-1 -- client-2 -- client-3
-   |                                  |
-client-7 -- client-6 -- client-5 -- client-4
-``` -->
+The built-in experiments are:
 
-<img src="./imgs/MNIST topo.png" onerror="this.onerror=null; this.src='https://github.com/jjakob10/asyncDFL/blob/main/imgs/client_log.png';" alt="topology"/>
+- `mnist`: the original grayscale CNN baseline.
+- `cifar10`: a compact three-block RGB CNN baseline.
 
-Client 7 is the head only for starting the experiment. It is not an aggregation
-server. Once started, all eight clients train and aggregate independently.
+Both experiments use the same ring topology, REST API, asynchronous FedAvg
+runtime, metrics format, and configuration surface.
 
-## How a round works
+## Repository layout
 
-For every round, a client:
-
-1. copies its latest published model and trains the copy on its local data;
-2. requests the latest completed model snapshot from both neighbors;
-3. performs sample-count-weighted FedAvg over its trained copy and all
-   successfully retrieved neighbor snapshots;
-4. atomically publishes the aggregate as its next model version; and
-5. evaluates the aggregate on the MNIST test set and records the result.
-
-Clients are asynchronous. A fast client may retrieve version 3 from one neighbor
-and version 2 from the other. There is no global round barrier. If a neighbor
-cannot be reached after the configured retries, the client records the error and
-aggregates the models that are available.
-
-The start message contains a run ID and is flooded around the ring. A client
-accepts its first run ID exactly once; duplicate deliveries are harmless. A
-different run ID is rejected until the container is restarted.
-
-## Run with Docker Compose
-
-Requirements:
-
-- Docker Engine or Docker Desktop with Compose v2
-- approximately 3 GB of free disk space for the CPU PyTorch image
-- enough CPU/RAM to run eight training containers concurrently
-
-Copy `.env.example` to `.env` if you want to change the defaults. Then run:
-
-```bash
-docker compose build
-docker compose up
+```text
+app/                       Generic client, runtime, federation, and trainer API
+experiments/
+  mnist/
+    trainer.py             MNIST model, data, training, and evaluation
+    Dockerfile
+    compose.yaml
+    .env.example
+  cifar10/
+    trainer.py             CIFAR-10 model, data, training, and evaluation
+    Dockerfile
+    compose.yaml
+    .env.example
+scripts/                   Monitoring and metric plotting
+tests/                     Generic runtime and experiment regression tests
+results/
+  mnist/                   Generated MNIST results
+  cifar10/                 Generated CIFAR-10 results
 ```
 
-Compose waits for clients 0 through 6 to become healthy before it starts client 7. Five seconds after client 7 becomes ready, it creates a run ID and begins the
-one-time start flood.
+## Trainer interface
 
-In another terminal, monitor all clients:
+The `TRAINER_MODULE` environment variable selects an importable trainer module:
+
+```dotenv
+TRAINER_MODULE=experiments.mnist.trainer
+```
+
+Each trainer module must provide these functions:
+
+```python
+def create_model() -> torch.nn.Module: ...
+def load_data(settings: Settings) -> DataBundle: ...
+def train_local(base_state, train_loader, settings) -> tuple[StateDict, dict]: ...
+def evaluate(state, test_loader) -> dict: ...
+```
+
+The client validates the module at startup. The runtime has no dataset or model
+imports and delegates model creation, data loading, local training, and
+evaluation to the selected trainer. Shared deterministic seeding and IID or
+Dirichlet partition generation are available from `app.training`.
+
+To add an experiment, create a new importable directory under `experiments/`,
+implement the trainer interface, and copy one of the existing Dockerfile and
+Compose configurations. Set `TRAINER_MODULE` to the new module and change the
+Dockerfile's dataset pre-download step.
+
+## Run an experiment
+
+Docker Engine or Docker Desktop with Compose v2 is required. Each image uses
+CPU-only PyTorch and downloads its dataset during the build, allowing the
+containers to run without internet access.
+
+Build and start MNIST:
+
+```bash
+docker compose -f experiments/mnist/compose.yaml build
+docker compose -f experiments/mnist/compose.yaml up
+```
+
+Build and start CIFAR-10:
+
+```bash
+docker compose -f experiments/cifar10/compose.yaml build
+docker compose -f experiments/cifar10/compose.yaml up
+```
+
+Only run one stack at a time because both publish host ports 8000 through 8007.
+Client 7 waits for the other clients to become healthy and then starts the
+experiment. Monitor completion in another terminal:
 
 ```bash
 python scripts/wait_for_run.py
 ```
 
-Useful individual requests:
+Stop the selected stack with:
 
 ```bash
-curl http://localhost:8007/status
-curl http://localhost:8000/health
-curl -o client-3.pt http://localhost:8003/model
+docker compose -f experiments/mnist/compose.yaml down
+docker compose -f experiments/cifar10/compose.yaml down
 ```
 
-Host ports 8000 through 8007 correspond to clients 0 through 7. Per-round JSONL
-files and final state dictionaries are written to `results/`.
+Per-round JSONL files and final PyTorch state dictionaries are written to the
+experiment-specific directory under `results/`.
 
-## Plot experiment metrics
+### Override defaults
 
-Install the project dependencies, then pass one or more experiment directories
-followed by the output directory:
+Copy the appropriate example and edit it:
 
 ```bash
-python scripts/plot_metrics.py results outputs/metrics
-python scripts/plot_metrics.py run-iid run-dirichlet outputs/comparison
+cp experiments/mnist/.env.example experiments/mnist/.env
+docker compose --env-file experiments/mnist/.env \
+  -f experiments/mnist/compose.yaml up
 ```
 
-The script writes one PNG per client and metric. By default, each chart plots
-both training and test values against the model version. Select a different
-phase or use elapsed time in seconds for the X axis with:
-
-```bash
-python scripts/plot_metrics.py --phase train results outputs/train
-python scripts/plot_metrics.py --phase test results outputs/test
-python scripts/plot_metrics.py --phase both --x-axis time \
-  run-iid run-dirichlet outputs/comparison-time
-```
-
-For a quick smoke test, put the following in `.env`:
+For a quick smoke test, use:
 
 ```dotenv
 ROUNDS=1
@@ -100,115 +118,78 @@ MAX_TRAIN_SAMPLES=1600
 MAX_TEST_SAMPLES=1000
 ```
 
-Stop and remove the containers with:
+The most useful settings are:
+
+| Variable             |       Default | Meaning                                |
+| -------------------- | ------------: | -------------------------------------- |
+| `TRAINER_MODULE`     | MNIST trainer | Import path for the experiment trainer |
+| `CLIENT_COUNT`       |           `8` | Number of clients                      |
+| `HEAD_CLIENT_ID`     |           `7` | Client that creates the initial run ID |
+| `ROUNDS`             |          `10` | Decentralized training rounds          |
+| `LOCAL_EPOCHS`       |           `1` | Local epochs per round                 |
+| `BATCH_SIZE`         |          `64` | Training batch size                    |
+| `LEARNING_RATE`      |        `0.01` | SGD learning rate                      |
+| `MOMENTUM`           |         `0.9` | SGD momentum                           |
+| `PARTITION_MODE`     |         `iid` | `iid` or `dirichlet`                   |
+| `DIRICHLET_ALPHA`    |         `0.5` | Dirichlet label-skew strength          |
+| `MIN_PARTITION_SIZE` |         `100` | Minimum examples in a Dirichlet shard  |
+| `SEED`               |          `42` | Model, partition, and loader seed      |
+| `MAX_TRAIN_SAMPLES`  |           `0` | Optional global training cap           |
+| `MAX_TEST_SAMPLES`   |           `0` | Optional test cap                      |
+| `TORCH_NUM_THREADS`  |           `1` | CPU threads per client                 |
+
+`NEIGHBORS` may explicitly list comma-separated URLs. If omitted, clients
+derive ring neighbors from `CLIENT_ID`, `CLIENT_COUNT`, `GNS3_IP_PREFIX`, and
+`GNS3_IP_OFFSET`.
+
+## Round behavior and API
+
+For every round, each client:
+
+1. trains a copy of its latest model on its local partition;
+2. fetches the latest snapshots from both ring neighbors;
+3. performs sample-count-weighted FedAvg over the available models;
+4. atomically publishes the aggregate; and
+5. evaluates and records the new model.
+
+Clients are asynchronous. An unavailable neighbor is recorded and skipped after
+the configured retries. A start run ID is flooded around the ring and accepted
+exactly once by every process.
+
+The HTTP interface is unchanged:
+
+- `GET /health`: readiness and client ID.
+- `POST /start`: accepts `{"run_id": "experiment-name"}`.
+- `GET /model`: current trusted PyTorch state dictionary and version headers.
+- `GET /status`: progress, latest metrics, neighbor versions, and errors.
+
+## Plot metrics
+
+Plot one or more result directories:
 
 ```bash
-docker compose down
+python scripts/plot_metrics.py results/mnist outputs/mnist
+python scripts/plot_metrics.py results/mnist results/cifar10 outputs/comparison
 ```
 
-Restart the containers before beginning another experiment because one process
-accepts only one run ID.
+Use `--phase train`, `--phase test`, or `--x-axis time` to change the plots.
 
-## Configuration
+## Build for GNS3
 
-The most useful environment variables are:
-
-| Variable             |           Default | Meaning                                                     |
-| -------------------- | ----------------: | ----------------------------------------------------------- |
-| `CLIENT_ID`          | derived from name | Numeric ID from 0 to 7                                      |
-| `CLIENT_NAME`        |        `client-0` | Node name; a trailing integer is parsed as the ID           |
-| `CLIENT_COUNT`       |               `8` | Number of clients                                           |
-| `HEAD_CLIENT_ID`     |               `7` | Client that creates the initial run ID                      |
-| `NEIGHBORS`          |           derived | Comma-separated neighbor base URLs                          |
-| `ROUNDS`             |              `10` | Decentralized training rounds                               |
-| `LOCAL_EPOCHS`       |               `1` | Local epochs per round                                      |
-| `BATCH_SIZE`         |              `64` | Training batch size                                         |
-| `LEARNING_RATE`      |            `0.01` | SGD learning rate                                           |
-| `MOMENTUM`           |             `0.9` | SGD momentum                                                |
-| `PARTITION_MODE`     |             `iid` | `iid` or `dirichlet`                                        |
-| `DIRICHLET_ALPHA`    |             `0.5` | Label-skew strength; smaller is more heterogeneous          |
-| `MIN_PARTITION_SIZE` |             `100` | Minimum examples in a Dirichlet shard                       |
-| `SEED`               |              `42` | Model, partition, and loader seed                           |
-| `REQUEST_TIMEOUT`    |               `5` | Per-request timeout in seconds                              |
-| `REQUEST_RETRIES`    |               `3` | Attempts for start/model requests                           |
-| `RETRY_DELAY`        |               `1` | Seconds between attempts                                    |
-| `HEAD_START_DELAY`   |               `5` | Head delay before creating the run                          |
-| `RESULTS_DIR`        |        `/results` | Metrics and final-model directory                           |
-| `MAX_TRAIN_SAMPLES`  |               `0` | Optional global training cap; 0 means full MNIST            |
-| `MAX_TEST_SAMPLES`   |               `0` | Optional test cap; 0 means full MNIST                       |
-| `TORCH_NUM_THREADS`  |               `1` | CPU threads per client; prevents eight-way oversubscription |
-
-If `NEIGHBORS` is omitted, the service derives its ring neighbors from
-`CLIENT_ID`, `CLIENT_COUNT`, `GNS3_IP_PREFIX` (default `10.10.0.`), and
-`GNS3_IP_OFFSET` (default `10`).
-
-## REST API
-
-### `GET /health`
-
-Returns readiness and client ID.
-
-### `POST /start`
-
-```json
-{ "run_id": "experiment-2026-07-17" }
-```
-
-Returns HTTP 202 for the first or a duplicate delivery. Returns HTTP 409 if the
-container has already accepted another run.
-
-### `GET /model`
-
-Returns a trusted PyTorch state dictionary as `application/octet-stream`.
-Metadata is carried in these response headers:
-
-- `X-Client-ID`
-- `X-Model-Version`
-- `X-Completed-Round`
-- `X-Sample-Count`
-
-### `GET /status`
-
-Returns current state, completed round, model version, sample count, latest
-metrics, neighbor versions used in the last round, and recent communication
-errors.
-
-## Build and load the image for GNS3
-
-GNS3 must have access to the built image on the server that executes Docker
-nodes. If Docker and GNS3 use the same engine, build it directly:
+Build the desired experiment image:
 
 ```bash
-docker build -t dfl-mnist:latest .
+docker build -f experiments/mnist/Dockerfile -t dfl-mnist:latest .
+docker build -f experiments/cifar10/Dockerfile -t dfl-cifar10:latest .
 ```
 
-If GNS3 runs in the GNS3 VM or on a remote server, transfer the image:
-
-```bash
-docker save dfl-mnist:latest -o dfl-mnist.tar
-# Copy dfl-mnist.tar to the GNS3 VM/server, then:
-docker load -i dfl-mnist.tar
-```
-
-MNIST is downloaded during the image build and stored under `/data`, so the
-topology does not need internet access at runtime.
-
-## Create the GNS3 topology
-
-### 1. Create one reusable Docker template
-
-In **Preferences → Docker containers**, create a template with:
-
-- image: `dfl-mnist:latest`
-- adapters: `1`
-- start command: leave empty so the image `CMD` runs
-- console: `none` (or an auxiliary shell if desired)
-- HTTP port: `8000` if your GNS3 version offers the field
-- persistent volume: `/results`
-- environment:
+If GNS3 uses another Docker engine, transfer the selected image with
+`docker save` and `docker load`. Create one reusable Docker template using the
+image, one adapter, port 8000, `/results` as a persistent volume, and:
 
 ```dotenv
 CLIENT_NAME=%vm-name%
+TRAINER_MODULE=experiments.mnist.trainer
 CLIENT_COUNT=8
 HEAD_CLIENT_ID=7
 ROUNDS=10
@@ -219,90 +200,31 @@ DIRICHLET_ALPHA=0.5
 SEED=42
 GNS3_IP_PREFIX=10.10.0.
 GNS3_IP_OFFSET=10
-REQUEST_TIMEOUT=5
-REQUEST_RETRIES=3
-RETRY_DELAY=1
 HEAD_START_DELAY=5
 TORCH_NUM_THREADS=1
 ```
 
-The `%vm-name%` template variable lets every node use the same image and
-template. GNS3 documents Docker template environment variables and persistent
-volumes in its
-[Docker template guide](https://docs.gns3.com/docs-3.1-en/web-ui/template-preferences-docker).
+Use `experiments.cifar10.trainer` with the CIFAR-10 image. Name the nodes
+`client-0` through `client-7`, attach them to the same Ethernet segment, and
+assign `10.10.0.10/24` through `10.10.0.17/24`. The derived neighbor URLs
+enforce the logical ring. Start clients 0 through 6 before client 7.
 
-### 2. Add nodes and links
-
-1. Add one built-in Ethernet switch.
-2. Add eight instances of the Docker template.
-3. Name them exactly `client-0` through `client-7`.
-4. Connect each container's `eth0` to the switch.
-
-The physical topology is a shared Ethernet segment, while the calculated
-neighbor URLs enforce the application-level ring.
-
-### 3. Assign static addresses
-
-With each container stopped, right-click it and choose **Edit config**. Configure
-`eth0` using this table:
-
-| Node     | Address         | Ring neighbors |
-| -------- | --------------- | -------------- |
-| client-0 | `10.10.0.10/24` | `.17`, `.11`   |
-| client-1 | `10.10.0.11/24` | `.10`, `.12`   |
-| client-2 | `10.10.0.12/24` | `.11`, `.13`   |
-| client-3 | `10.10.0.13/24` | `.12`, `.14`   |
-| client-4 | `10.10.0.14/24` | `.13`, `.15`   |
-| client-5 | `10.10.0.15/24` | `.14`, `.16`   |
-| client-6 | `10.10.0.16/24` | `.15`, `.17`   |
-| client-7 | `10.10.0.17/24` | `.16`, `.10`   |
-
-For example, client 0's `/etc/network/interfaces` entry is:
-
-```text
-auto eth0
-iface eth0 inet static
-    address 10.10.0.10
-    netmask 255.255.255.0
-```
-
-Change only the address for the other clients. A gateway is unnecessary for
-this isolated topology. GNS3 explains why Docker-node IP configuration is
-manual in its [Docker networking documentation](https://docs.gns3.com/docs/emulators/docker-support-in-gns3).
-
-### 4. Start the experiment
-
-1. Start clients 0 through 6.
-2. Wait until their APIs are ready. From a client console, for example:
-
-   ```bash
-   python -c "import urllib.request; print(urllib.request.urlopen('http://10.10.0.10:8000/health').read())"
-   ```
-
-3. Start client 7 last.
-4. After five seconds, client 7 starts itself and floods the start message.
-5. Inspect each auxiliary console, `/status`, or the persistent `/results`
-   volume to verify completion.
-
-## Tests
-
-Install the development dependencies and run:
+## Development and tests
 
 ```bash
 python -m pip install -r requirements-dev.txt
+python -m compileall -q app experiments tests scripts
 python -m pytest
+docker compose -f experiments/mnist/compose.yaml config --quiet
+docker compose -f experiments/cifar10/compose.yaml config --quiet
 ```
 
-The suite covers deterministic IID/Dirichlet partitions, partition integrity,
-weighted FedAvg, model compatibility and serialization, API behavior,
-one-run-only semantics, atomic version progress, result files, and unavailable
-neighbors.
+The suite covers trainer discovery and validation, model smoke training,
+partitions, federation, API behavior, ring propagation, unavailable neighbors,
+atomic version updates, and result files.
 
 ## Security boundary
 
-This baseline assumes a trusted, isolated experiment network. Model files and
+This baseline assumes a trusted isolated experiment network. Model files and
 start messages use plaintext HTTP without authentication. Do not deserialize
-models from untrusted nodes. QKD-derived key establishment, encryption,
-authentication, TLS, resumable checkpoints, and multiple runs per process are
-intentionally outside the baseline and can be added around the REST model
-transfer later.
+models from untrusted nodes.

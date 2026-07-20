@@ -18,9 +18,13 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
+COPY experiments/__init__.py ./experiments/__init__.py
+COPY experiments/cifar10 ./experiments/cifar10
+
+ENV TRAINER_MODULE=experiments.cifar10.trainer
 
 RUN mkdir -p /data /results \
-    && python -c "from torchvision.datasets import MNIST; MNIST('/data', train=True, download=True); MNIST('/data', train=False, download=True)"
+    && python -c "from torchvision.datasets import CIFAR10; CIFAR10.url = 'https://huggingface.co/datasets/xingslong/cifar-10-batches-py/resolve/main/cifar-10-python.tar.gz'; CIFAR10('/data', train=True, download=True); CIFAR10('/data', train=False, download=True)"
 
 EXPOSE 8000
 VOLUME ["/results"]
