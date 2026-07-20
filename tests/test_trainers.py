@@ -15,7 +15,7 @@ def settings() -> Settings:
         client_id=0,
         client_name="client-0",
         client_count=1,
-        head_client_id=0,
+        head_client_ids=(0,),
         neighbors=(),
         local_epochs=1,
         batch_size=2,
@@ -76,6 +76,6 @@ def test_classifier_train_and_evaluate_smoke(trainer, image_shape) -> None:
 def test_settings_reads_trainer_module(monkeypatch) -> None:
     monkeypatch.setenv("TRAINER_MODULE", "experiments.cifar10.trainer")
     monkeypatch.setenv("CLIENT_COUNT", "1")
-    monkeypatch.setenv("HEAD_CLIENT_ID", "0")
+    monkeypatch.setenv("HEAD_CLIENT_IDS", "0")
 
     assert Settings.from_env().trainer_module == "experiments.cifar10.trainer"

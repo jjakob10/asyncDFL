@@ -1,7 +1,8 @@
 x-common-environment: &common-environment
   TRAINER_MODULE: "${TRAINER_MODULE:-experiments.mnist.trainer}"
   CLIENT_COUNT: "8"
-  HEAD_CLIENT_ID: "7"
+  HEAD_CLIENT_IDS: "7"
+  RUN_ID: "${RUN_ID:-mnist-ring}"
   ROUNDS: "${ROUNDS:-10}"
   LOCAL_EPOCHS: "${LOCAL_EPOCHS:-1}"
   BATCH_SIZE: "${BATCH_SIZE:-64}"

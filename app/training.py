@@ -17,7 +17,7 @@ from app.federation import StateDict
 
 @dataclass
 class DataBundle:
-    train_loader: DataLoader
+    train_loader: DataLoader | None
     test_loader: DataLoader
     sample_count: int
 
@@ -88,19 +88,31 @@ def make_partitions(
     alpha: float = 0.5,
     min_size: int = 100,
     max_attempts: int = 1_000,
+    empty_client_ids: tuple[int, ...] = (),
 ) -> list[np.ndarray]:
     labels = np.asarray(labels, dtype=np.int64)
     if client_count < 1:
         raise ValueError("client_count must be positive")
-    if labels.size < client_count * min_size:
+    empty_ids = set(empty_client_ids)
+    if any(not 0 <= item < client_count for item in empty_ids):
+        raise ValueError("empty client IDs must be valid client IDs")
+    data_client_ids = [item for item in range(client_count) if item not in empty_ids]
+    if not data_client_ids:
+        raise ValueError("at least one client must have local data")
+    data_client_count = len(data_client_ids)
+    if labels.size < data_client_count * min_size:
         raise ValueError("dataset is too small for the requested minimum partition size")
 
     if mode == "iid":
         rng = np.random.default_rng(seed)
-        return [
+        data_parts = [
             part.astype(np.int64)
-            for part in np.array_split(rng.permutation(labels.size), client_count)
+            for part in np.array_split(rng.permutation(labels.size), data_client_count)
         ]
+        result = [np.empty(0, dtype=np.int64) for _ in range(client_count)]
+        for client_id, part in zip(data_client_ids, data_parts):
+            result[client_id] = part
+        return result
     if mode != "dirichlet":
         raise ValueError(f"unknown partition mode: {mode}")
     if alpha <= 0:
@@ -109,11 +121,11 @@ def make_partitions(
     classes = np.unique(labels)
     for attempt in range(max_attempts):
         rng = np.random.default_rng(seed + attempt)
-        partitions: list[list[int]] = [[] for _ in range(client_count)]
+        partitions: list[list[int]] = [[] for _ in range(data_client_count)]
         for label in classes:
             indices = np.flatnonzero(labels == label)
             rng.shuffle(indices)
-            probabilities = rng.dirichlet(np.full(client_count, alpha))
+            probabilities = rng.dirichlet(np.full(data_client_count, alpha))
             counts = rng.multinomial(len(indices), probabilities)
             cursor = 0
             for client_id, count in enumerate(counts):
@@ -122,11 +134,14 @@ def make_partitions(
                 )
                 cursor += count
         if min(map(len, partitions)) >= min_size:
-            result = []
+            data_parts = []
             for values in partitions:
                 array = np.asarray(values, dtype=np.int64)
                 rng.shuffle(array)
-                result.append(array)
+                data_parts.append(array)
+            result = [np.empty(0, dtype=np.int64) for _ in range(client_count)]
+            for client_id, part in zip(data_client_ids, data_parts):
+                result[client_id] = part
             return result
     raise RuntimeError(
         f"could not create a Dirichlet partition with min_size={min_size}"

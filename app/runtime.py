@@ -91,6 +91,13 @@ class ClientRuntime:
                 "client_id": self.settings.client_id,
                 "client_name": self.settings.client_name,
                 "is_head": self.settings.is_head,
+                "head_client_ids": list(self.settings.head_client_ids),
+                "has_local_data": self.settings.has_local_data,
+                "experiment_id": self.settings.experiment_id,
+                "topology_name": self.settings.topology_name,
+                "component_id": self.settings.component_id,
+                "component_size": self.settings.component_size,
+                "paper_role": self.settings.paper_role,
                 "state": self._state,
                 "run_id": self._run_id,
                 "current_round": self._completed_round,
@@ -162,16 +169,18 @@ class ClientRuntime:
             response = self._request_with_retries("GET", f"{neighbor}/model")
             state = deserialize_state_dict(response.content, reference)
             sample_count = int(response.headers["X-Sample-Count"])
-            if sample_count <= 0:
-                raise ValueError("neighbor returned a non-positive sample count")
+            if sample_count < 0:
+                raise ValueError("neighbor returned a negative sample count")
+            aggregation_weight = max(sample_count, 1)
             metadata = {
                 "url": neighbor,
                 "client_id": int(response.headers["X-Client-ID"]),
                 "model_version": int(response.headers["X-Model-Version"]),
                 "completed_round": int(response.headers["X-Completed-Round"]),
                 "sample_count": sample_count,
+                "aggregation_weight": aggregation_weight,
             }
-            return state, sample_count, metadata
+            return state, aggregation_weight, metadata
         except Exception as exc:
             self._record_error("model fetch", neighbor, str(exc))
             return None
@@ -191,14 +200,18 @@ class ClientRuntime:
                 with self._lock:
                     base_state = clone_state_dict(self._model)
                     error_cursor = len(self._errors)
-                local_state, train_metrics = self.trainer.train_local(
-                    base_state,
-                    self.data.train_loader,
-                    self.settings,
-                )
+                if self.data.train_loader is None or self.data.sample_count == 0:
+                    local_state = base_state
+                    train_metrics: dict[str, float] = {}
+                else:
+                    local_state, train_metrics = self.trainer.train_local(
+                        base_state,
+                        self.data.train_loader,
+                        self.settings,
+                    )
 
                 weighted_states: list[tuple[StateDict, int]] = [
-                    (local_state, self.data.sample_count)
+                    (local_state, max(self.data.sample_count, 1))
                 ]
                 neighbor_versions: list[dict[str, Any]] = []
                 for neighbor in self.settings.neighbors:
@@ -221,6 +234,16 @@ class ClientRuntime:
                     "round": round_number,
                     "model_version": round_number,
                     "participants": len(weighted_states),
+                    "experiment_id": self.settings.experiment_id,
+                    "topology_name": self.settings.topology_name,
+                    "component_id": self.settings.component_id,
+                    "component_size": self.settings.component_size,
+                    "is_connected": self.settings.component_size > 1,
+                    "is_head": self.settings.is_head,
+                    "has_local_data": self.settings.has_local_data,
+                    "paper_role": self.settings.paper_role,
+                    "sample_count": self.data.sample_count,
+                    "aggregation_weight": max(self.data.sample_count, 1),
                     "neighbor_versions": neighbor_versions,
                     "neighbor_errors": round_errors,
                     "train": train_metrics,
@@ -238,7 +261,7 @@ class ClientRuntime:
                     self.settings.client_id,
                     round_number,
                     self.settings.rounds,
-                    train_metrics["loss"],
+                    train_metrics.get("loss", float("nan")),
                     test_metrics["accuracy"],
                     len(weighted_states) - 1,
                 )

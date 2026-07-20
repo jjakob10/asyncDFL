@@ -1,4 +1,5 @@
 from pathlib import Path
+import time
 
 from fastapi.testclient import TestClient
 
@@ -74,3 +75,22 @@ def test_start_validates_run_id(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         assert client.post("/start", json={"run_id": ""}).status_code == 422
 
+
+def test_head_auto_starts_with_configured_shared_run_id(tmp_path: Path) -> None:
+    settings = Settings(
+        client_id=8,
+        client_name="client-8",
+        client_count=10,
+        head_client_ids=(7, 8, 9),
+        run_id="shared-paper-run",
+        neighbors=(),
+        head_start_delay=0.01,
+        results_dir=str(tmp_path),
+    )
+    runtime = StubRuntime(settings)
+
+    with TestClient(create_app(settings, runtime, auto_start_head=True)) as client:
+        deadline = time.monotonic() + 1
+        while runtime.run_id is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert client.get("/status").json()["run_id"] == "shared-paper-run"

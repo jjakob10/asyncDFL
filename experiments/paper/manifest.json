@@ -1,0 +1,57 @@
+{
+  "defaults": {
+    "batch_size": 128,
+    "learning_rate": 0.0001,
+    "momentum": 0.9,
+    "seed": 1999
+  },
+  "datasets": {
+    "mnist": {
+      "trainer_module": "experiments.mnist.trainer",
+      "dockerfile": "experiments/mnist/Dockerfile",
+      "rounds": 24,
+      "local_epochs": [2, 4, 8, 16, 32],
+      "irregular": true
+    },
+    "cifar10": {
+      "trainer_module": "experiments.cifar10.trainer",
+      "dockerfile": "experiments/cifar10/Dockerfile",
+      "rounds": 101,
+      "local_epochs": [2, 4, 8, 16, 32],
+      "irregular": true
+    },
+    "ton_iot": {
+      "trainer_module": "experiments.ton_iot.trainer",
+      "dockerfile": "experiments/ton_iot/Dockerfile",
+      "rounds": 24,
+      "local_epochs": [32],
+      "irregular": false
+    }
+  },
+  "regular_setups": {
+    "8p2": {
+      "connected_clients": 8,
+      "total_clients": 10,
+      "degrees": [0, 2, 4, 6, 7],
+      "empty_clients": [0, 4, 9],
+      "disconnected_clients": [8, 9]
+    },
+    "16p4": {
+      "connected_clients": 16,
+      "total_clients": 20,
+      "degrees": [0, 2, 4, 6, 8, 10, 12, 14, 15],
+      "empty_clients": [0, 5, 10, 18, 19],
+      "disconnected_clients": [16, 17, 18, 19]
+    }
+  },
+  "irregular_topologies": {
+    "irregular-sparse": {
+      "client_count": 8,
+      "edges": [[0, 4], [1, 2], [1, 5], [2, 3], [4, 5], [5, 6], [5, 7]]
+    },
+    "irregular-dense": {
+      "client_count": 8,
+      "edges": [[0, 1], [0, 4], [0, 7], [1, 2], [1, 5], [1, 6], [2, 3], [2, 4], [2, 6], [3, 5], [3, 6], [4, 5], [4, 7], [5, 6], [5, 7], [6, 7]]
+    }
+  }
+}

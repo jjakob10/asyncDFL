@@ -124,7 +124,9 @@ The most useful settings are:
 | -------------------- | ------------: | -------------------------------------- |
 | `TRAINER_MODULE`     | MNIST trainer | Import path for the experiment trainer |
 | `CLIENT_COUNT`       |           `8` | Number of clients                      |
-| `HEAD_CLIENT_ID`     |           `7` | Client that creates the initial run ID |
+| `HEAD_CLIENT_IDS`    |           `7` | Comma-separated clients that auto-start |
+| `RUN_ID`             |     `dfl-run` | Shared identity for one execution       |
+| `EMPTY_CLIENT_IDS`   |       *(none)* | Clients with no local training data     |
 | `ROUNDS`             |          `10` | Decentralized training rounds          |
 | `LOCAL_EPOCHS`       |           `1` | Local epochs per round                 |
 | `BATCH_SIZE`         |          `64` | Training batch size                    |
@@ -174,6 +176,48 @@ python scripts/plot_metrics.py results/mnist results/cifar10 outputs/comparison
 
 Use `--phase train`, `--phase test`, or `--x-axis time` to change the plots.
 
+## Reproduce the GLow paper experiments
+
+The checked-in paper manifest expands to 158 decentralized configurations:
+MNIST and CIFAR-10 regular 8+2 and 16+4 topology/epoch sweeps, their sparse
+and dense irregular graphs, and the TON_IOT regular topology sweeps. These
+experiments intentionally use this framework's asynchronous runtime rather
+than GLow's sequential head selection.
+
+List or inspect configurations without starting containers:
+
+```bash
+python scripts/run_paper_experiments.py list --dataset mnist
+python scripts/run_paper_experiments.py render-compose \
+  mnist-8p2-top4-e32 --run-id trial-1
+```
+
+Run one capped smoke experiment, one full experiment, or a filtered matrix:
+
+```bash
+python scripts/run_paper_experiments.py smoke mnist-8p2-top4-e32
+python scripts/run_paper_experiments.py run mnist-8p2-top4-e32
+python scripts/run_paper_experiments.py run --all \
+  --dataset mnist --topology topology-4 --local-epochs 32
+```
+
+Each generated run uses one shared `RUN_ID` across every connected component.
+It is an execution identity and idempotency key, not a client or model
+version. The highest client ID in each connected component is included in
+`HEAD_CLIENT_IDS`; topology 0 therefore makes every isolated client a head.
+Results and resolved configuration are stored under
+`results/paper/<experiment-id>/<run-id>/`. The runner waits for all clients,
+writes CSV/Markdown summaries and accuracy/loss charts, then removes the
+containers.
+
+TON_IOT is not redistributed. Download `Train_Test_Network.csv` from the
+official dataset and provide it as a read-only input:
+
+```bash
+python scripts/run_paper_experiments.py smoke ton_iot-8p2-top4-e32 \
+  --ton-iot-path C:/datasets/Train_Test_Network.csv
+```
+
 ## Build for GNS3
 
 Build the desired experiment image:
@@ -191,7 +235,8 @@ image, one adapter, port 8000, `/results` as a persistent volume, and:
 CLIENT_NAME=%vm-name%
 TRAINER_MODULE=experiments.mnist.trainer
 CLIENT_COUNT=8
-HEAD_CLIENT_ID=7
+HEAD_CLIENT_IDS=7
+RUN_ID=gns3-ring
 ROUNDS=10
 LOCAL_EPOCHS=1
 BATCH_SIZE=64

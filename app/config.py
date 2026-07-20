@@ -18,6 +18,18 @@ def _client_id(value: str) -> int:
         raise ValueError(f"CLIENT_ID/CLIENT_NAME must end in a number, got {value!r}")
     return int(match.group(1))
 
+def _env_int_tuple(name: str, default: str = "") -> tuple[int, ...]:
+    value = os.getenv(name, default).strip()
+    if not value:
+        return ()
+    try:
+        result = tuple(int(item.strip()) for item in value.split(",") if item.strip())
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a comma-separated list of integers") from exc
+    if len(set(result)) != len(result):
+        raise ValueError(f"{name} must not contain duplicate client IDs")
+    return result
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -25,7 +37,9 @@ class Settings:
     client_name: str
     trainer_module: str = "experiments.mnist.trainer"
     client_count: int = 8
-    head_client_id: int = 7
+    head_client_ids: tuple[int, ...] = (7,)
+    run_id: str = "dfl-run"
+    empty_client_ids: tuple[int, ...] = ()
     neighbors: tuple[str, ...] = ()
     rounds: int = 10
     local_epochs: int = 1
@@ -47,10 +61,20 @@ class Settings:
     max_test_samples: int = 0
     api_port: int = 8000
     torch_num_threads: int = 1
+    experiment_id: str = "custom"
+    topology_name: str = "custom"
+    component_id: int = 0
+    component_size: int = 1
+    paper_role: str = "R"
+    ton_iot_path: str = ""
 
     @property
     def is_head(self) -> bool:
-        return self.client_id == self.head_client_id
+        return self.client_id in self.head_client_ids
+
+    @property
+    def has_local_data(self) -> bool:
+        return self.client_id not in self.empty_client_ids
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -59,11 +83,11 @@ class Settings:
         client_count = int(os.getenv("CLIENT_COUNT", "8"))
         api_port = int(os.getenv("API_PORT", "8000"))
 
-        explicit_neighbors = os.getenv("NEIGHBORS", "").strip()
-        if explicit_neighbors:
+        explicit_neighbors = os.getenv("NEIGHBORS")
+        if explicit_neighbors is not None:
             neighbors = tuple(
                 url.strip().rstrip("/")
-                for url in explicit_neighbors.split(",")
+                for url in explicit_neighbors.strip().split(",")
                 if url.strip()
             )
         else:
@@ -83,7 +107,9 @@ class Settings:
                 "TRAINER_MODULE", "experiments.mnist.trainer"
             ).strip(),
             client_count=client_count,
-            head_client_id=int(os.getenv("HEAD_CLIENT_ID", "7")),
+            head_client_ids=_env_int_tuple("HEAD_CLIENT_IDS", "7"),
+            run_id=os.getenv("RUN_ID", "dfl-run").strip(),
+            empty_client_ids=_env_int_tuple("EMPTY_CLIENT_IDS"),
             neighbors=neighbors,
             rounds=int(os.getenv("ROUNDS", "10")),
             local_epochs=int(os.getenv("LOCAL_EPOCHS", "1")),
@@ -105,6 +131,12 @@ class Settings:
             max_test_samples=int(os.getenv("MAX_TEST_SAMPLES", "0")),
             api_port=api_port,
             torch_num_threads=int(os.getenv("TORCH_NUM_THREADS", "1")),
+            experiment_id=os.getenv("EXPERIMENT_ID", "custom").strip(),
+            topology_name=os.getenv("TOPOLOGY_NAME", "custom").strip(),
+            component_id=int(os.getenv("COMPONENT_ID", "0")),
+            component_size=int(os.getenv("COMPONENT_SIZE", "1")),
+            paper_role=os.getenv("PAPER_ROLE", "R").strip().upper(),
+            ton_iot_path=os.getenv("TON_IOT_PATH", "").strip(),
         )
         settings.validate()
         return settings
@@ -114,8 +146,22 @@ class Settings:
             raise ValueError("TRAINER_MODULE must not be empty")
         if not 0 <= self.client_id < self.client_count:
             raise ValueError("client_id must be between 0 and client_count - 1")
-        if not 0 <= self.head_client_id < self.client_count:
-            raise ValueError("head_client_id must be between 0 and client_count - 1")
+        if not self.head_client_ids:
+            raise ValueError("HEAD_CLIENT_IDS must contain at least one client ID")
+        if any(not 0 <= item < self.client_count for item in self.head_client_ids):
+            raise ValueError(
+                "HEAD_CLIENT_IDS entries must be between 0 and client_count - 1"
+            )
+        if any(not 0 <= item < self.client_count for item in self.empty_client_ids):
+            raise ValueError(
+                "EMPTY_CLIENT_IDS entries must be between 0 and client_count - 1"
+            )
+        if not self.run_id or len(self.run_id) > 128:
+            raise ValueError("RUN_ID must contain between 1 and 128 characters")
+        if self.paper_role not in {"R", "D", "E", "ED"}:
+            raise ValueError("PAPER_ROLE must be one of R, D, E, or ED")
+        if self.component_size < 1:
+            raise ValueError("COMPONENT_SIZE must be positive")
         if self.partition_mode not in {"iid", "dirichlet"}:
             raise ValueError("PARTITION_MODE must be 'iid' or 'dirichlet'")
         if self.rounds < 1 or self.local_epochs < 1 or self.batch_size < 1:

@@ -39,3 +39,21 @@ def test_dirichlet_partition_is_complete_disjoint_and_reproducible() -> None:
 def test_partition_rejects_impossible_minimum() -> None:
     with pytest.raises(ValueError, match="too small"):
         make_partitions(np.arange(20) % 2, 8, "iid", seed=42, min_size=3)
+
+
+def test_empty_clients_receive_no_data_and_remaining_partition_is_complete() -> None:
+    labels = np.tile(np.arange(10), 70)
+
+    parts = make_partitions(
+        labels,
+        10,
+        "iid",
+        seed=1999,
+        min_size=50,
+        empty_client_ids=(0, 4, 9),
+    )
+
+    assert [len(parts[item]) for item in (0, 4, 9)] == [0, 0, 0]
+    combined = np.concatenate([part for part in parts if len(part)])
+    assert len(combined) == len(labels)
+    assert len(set(combined.tolist())) == len(labels)

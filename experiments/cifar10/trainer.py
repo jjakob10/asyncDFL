@@ -82,6 +82,7 @@ def load_data(settings: Settings) -> DataBundle:
             settings.min_partition_size,
             max(1, len(labels) // settings.client_count // 2),
         ),
+        empty_client_ids=settings.empty_client_ids,
     )
     local_indices = candidate_indices[partitions[settings.client_id]]
     train_subset = Subset(train_dataset, local_indices.tolist())
@@ -93,13 +94,15 @@ def load_data(settings: Settings) -> DataBundle:
         test_dataset = Subset(test_dataset, test_indices.tolist())
 
     generator = torch.Generator().manual_seed(settings.seed + settings.client_id)
-    train_loader = DataLoader(
-        train_subset,
-        batch_size=settings.batch_size,
-        shuffle=True,
-        num_workers=0,
-        generator=generator,
-    )
+    train_loader = None
+    if len(train_subset):
+        train_loader = DataLoader(
+            train_subset,
+            batch_size=settings.batch_size,
+            shuffle=True,
+            num_workers=0,
+            generator=generator,
+        )
     test_loader = DataLoader(
         test_dataset,
         batch_size=max(settings.batch_size, 256),

@@ -90,6 +90,32 @@ def test_unavailable_neighbor_is_recorded_and_skipped(monkeypatch, tmp_path: Pat
     assert runtime.status()["recent_errors"][-1]["operation"] == "model fetch"
 
 
+def test_empty_client_skips_training_and_completes(tmp_path: Path) -> None:
+    settings = Settings(
+        client_id=0,
+        client_name="client-0",
+        client_count=2,
+        head_client_ids=(0,),
+        empty_client_ids=(0,),
+        neighbors=(),
+        rounds=1,
+        results_dir=str(tmp_path),
+    )
+    trainer = TinyTrainer()
+    empty_data = DataBundle(None, tiny_data().test_loader, sample_count=0)
+    runtime = ClientRuntime(settings, empty_data, trainer)
+
+    assert runtime.start("empty-run") == "started"
+    runtime.wait(timeout=5)
+
+    assert runtime.status()["state"] == "completed"
+    assert runtime.status()["sample_count"] == 0
+    assert trainer.train_calls == 0
+    record = runtime.status()["latest_metrics"]
+    assert record["train"] == {}
+    assert record["aggregation_weight"] == 1
+
+
 def test_start_flood_visits_eight_node_ring_once(monkeypatch, tmp_path: Path) -> None:
     runtimes: dict[str, ClientRuntime] = {}
     executions = [0] * 8

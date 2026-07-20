@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 import threading
 import time
-import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request, status
@@ -37,7 +36,7 @@ def create_app(
         if auto_start_head and configured_settings.is_head:
             def delayed_start() -> None:
                 time.sleep(configured_settings.head_start_delay)
-                app.state.runtime.start(str(uuid.uuid4()))
+                app.state.runtime.start(configured_settings.run_id)
 
             threading.Thread(target=delayed_start, name="head-auto-start", daemon=True).start()
         yield
@@ -83,4 +82,3 @@ def create_app(
 
 
 app = create_app()
-
