@@ -9,8 +9,9 @@ The built-in experiments are:
 
 - `mnist`: the original grayscale CNN baseline.
 - `cifar10`: a compact three-block RGB CNN baseline.
+- `ecg`: FedCVD's 12-lead ResNet-34 for 20-label ECG diagnosis.
 
-Both experiments use the same ring topology, REST API, asynchronous FedAvg
+All experiments use the same ring topology, REST API, asynchronous FedAvg
 runtime, metrics format, and configuration surface.
 
 ## Repository layout
@@ -28,11 +29,19 @@ experiments/
     Dockerfile
     compose.yaml
     .env.example
+  ecg/
+    trainer.py             ECG model, lazy HDF5 data, training, and evaluation
+    Dockerfile
+    compose.yaml           Eight-client ring
+    compose.4.yaml         Four-client ring
+    .env.example
 scripts/                   Monitoring and metric plotting
 tests/                     Generic runtime and experiment regression tests
 results/
   mnist/                   Generated MNIST results
   cifar10/                 Generated CIFAR-10 results
+  ecg-4/                   Generated four-client ECG results
+  ecg-8/                   Generated eight-client ECG results
 ```
 
 ## Trainer interface
@@ -82,9 +91,25 @@ docker compose -f experiments/cifar10/compose.yaml build
 docker compose -f experiments/cifar10/compose.yaml up
 ```
 
-Only run one stack at a time because both publish host ports 8000 through 8007.
-Client 7 waits for the other clients to become healthy and then starts the
-experiment. Monitor completion in another terminal:
+ECG uses an external preprocessed FedCVD data tree. Build and start the
+eight-client ring:
+
+```bash
+docker compose -f experiments/ecg/compose.yaml build
+docker compose -f experiments/ecg/compose.yaml up
+```
+
+Or run the four-client ring with the same `dfl-ecg:latest` image:
+
+```bash
+docker compose -f experiments/ecg/compose.4.yaml build
+docker compose -f experiments/ecg/compose.4.yaml up
+```
+
+Only run one stack at a time because their published host-port ranges overlap.
+In the eight-client stacks, client 7 waits for the other clients to become
+healthy and then starts the experiment; the four-client ECG stack uses client
+3. Monitor completion in another terminal:
 
 ```bash
 python scripts/wait_for_run.py
@@ -95,6 +120,8 @@ Stop the selected stack with:
 ```bash
 docker compose -f experiments/mnist/compose.yaml down
 docker compose -f experiments/cifar10/compose.yaml down
+docker compose -f experiments/ecg/compose.yaml down
+docker compose -f experiments/ecg/compose.4.yaml down
 ```
 
 Per-round JSONL files and final PyTorch state dictionaries are written to the
@@ -110,12 +137,57 @@ docker compose --env-file experiments/mnist/.env \
   -f experiments/mnist/compose.yaml up
 ```
 
+For ECG, copy the shared example and set `ECG_DATA_DIR` to the host directory
+containing `ECG/preprocessed`:
+
+```bash
+cp experiments/ecg/.env.example experiments/ecg/.env
+```
+
+The checked-in default
+`../../../FedCVD/data` matches a FedCVD checkout adjacent to this repository.
+An absolute path is more portable:
+
+```dotenv
+# Windows with Docker Desktop
+ECG_DATA_DIR=C:/Users/you/Documents/FedCVD/data
+
+# Linux
+ECG_DATA_DIR=/home/you/FedCVD/data
+```
+
+The expected layout is:
+
+```text
+ECG_DATA_DIR/
+  ECG/
+    preprocessed/
+      <location>/
+        train.csv
+        test.csv
+        records.h5
+```
+
+The four reference locations occupy approximately 9.35 GB. Compose mounts this
+directory at `/data` read-only; it is never copied into the image or written by
+the clients. The trainer merges all source locations and then deterministically
+repartitions the combined training rows. The four-client topology therefore
+matches FedCVD's client count but does not map one runtime client to one source
+location.
+
 For a quick smoke test, use:
 
 ```dotenv
 ROUNDS=1
 MAX_TRAIN_SAMPLES=1600
 MAX_TEST_SAMPLES=1000
+```
+
+For example:
+
+```bash
+docker compose --env-file experiments/ecg/.env \
+  -f experiments/ecg/compose.4.yaml up
 ```
 
 The most useful settings are:
@@ -172,6 +244,8 @@ Plot one or more result directories:
 ```bash
 python scripts/plot_metrics.py results/mnist outputs/mnist
 python scripts/plot_metrics.py results/mnist results/cifar10 outputs/comparison
+python scripts/plot_metrics.py results/ecg-4 outputs/ecg-4
+python scripts/plot_metrics.py results/ecg-8 outputs/ecg-8
 ```
 
 Use `--phase train`, `--phase test`, or `--x-axis time` to change the plots.
@@ -225,6 +299,7 @@ Build the desired experiment image:
 ```bash
 docker build -f experiments/mnist/Dockerfile -t dfl-mnist:latest .
 docker build -f experiments/cifar10/Dockerfile -t dfl-cifar10:latest .
+docker build -f experiments/ecg/Dockerfile -t dfl-ecg:latest .
 ```
 
 If GNS3 uses another Docker engine, transfer the selected image with
@@ -254,6 +329,13 @@ Use `experiments.cifar10.trainer` with the CIFAR-10 image. Name the nodes
 assign `10.10.0.10/24` through `10.10.0.17/24`. The derived neighbor URLs
 enforce the logical ring. Start clients 0 through 6 before client 7.
 
+For ECG, use `dfl-ecg:latest`,
+`TRAINER_MODULE=experiments.ecg.trainer`, and mount the host FedCVD data
+directory read-only at `/data` on every node. Use client IDs 0 through 7 with
+head 7 for the eight-client topology, or IDs 0 through 3 with head 3 for the
+four-client topology. GNS3 must provide the data volume because the ECG image
+does not embed the approximately 9.35 GB dataset.
+
 ## Development and tests
 
 ```bash
@@ -262,6 +344,8 @@ python -m compileall -q app experiments tests scripts
 python -m pytest
 docker compose -f experiments/mnist/compose.yaml config --quiet
 docker compose -f experiments/cifar10/compose.yaml config --quiet
+docker compose -f experiments/ecg/compose.yaml config --quiet
+docker compose -f experiments/ecg/compose.4.yaml config --quiet
 ```
 
 The suite covers trainer discovery and validation, model smoke training,

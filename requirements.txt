@@ -1,5 +1,6 @@
 --extra-index-url https://download.pytorch.org/whl/cpu
 fastapi==0.115.12
+h5py==3.16.0
 httpx==0.28.1
 matplotlib==3.10.7
 numpy==2.1.3
