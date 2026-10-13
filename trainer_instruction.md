@@ -228,10 +228,13 @@ Important data rules:
   skips local training safely.
 - `sample_count` is the number of unique local examples, not the number of
   batches or the number of example visits across local epochs. It becomes the
-  client's FedAvg weight.
+  client's FedAvg weight when positive. The runtime uses
+  `max(sample_count, 1)`, so empty clients retain weight 1 while reporting
+  `sample_count=0`.
 - Use `settings.download_data` for dataset download behavior. Containers are
-  normally expected to use data downloaded during image construction and run
-  without internet access.
+  expected to run without internet access. MNIST and CIFAR-10 use data
+  downloaded during image construction; ECG and TON_IOT use external data
+  mounted read-only at runtime.
 - Use `num_workers=0` unless the experiment has a tested reason to change it;
   this is reliable inside the existing containers.
 - Fit data-dependent preprocessing without test leakage. All clients must

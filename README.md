@@ -1,17 +1,21 @@
 # Decentralized Federated Learning Experiments
 
 This repository provides a generic decentralized federated learning client and
-pluggable experiment trainers. Eight independent FastAPI clients form a logical
-ring, train on disjoint dataset partitions, and exchange model snapshots only
-with their two neighbors.
+pluggable experiment trainers. Independent FastAPI clients train on disjoint
+dataset partitions and exchange model snapshots with their configured neighbors.
+The standalone Compose stacks use rings of eight clients, or four for ECG.
+The paper experiment runner also supports regular and irregular graphs,
+isolated clients, and clients without local training data.
 
 The built-in experiments are:
 
 - `mnist`: the original grayscale CNN baseline.
 - `cifar10`: a compact three-block RGB CNN baseline.
 - `ecg`: FedCVD's 12-lead ResNet-34 for 20-label ECG diagnosis.
+- `ton_iot`: a tabular binary network-intrusion classifier, run through the
+  paper experiment runner.
 
-All experiments use the same ring topology, REST API, asynchronous FedAvg
+All experiments use the same REST API, asynchronous FedAvg
 runtime, metrics format, and configuration surface.
 
 ## Repository layout
@@ -35,9 +39,17 @@ experiments/
     compose.yaml           Eight-client ring
     compose.4.yaml         Four-client ring
     .env.example
+  ton_iot/
+    trainer.py             Tabular preprocessing, binary model, and evaluation
+    Dockerfile
+  paper/
+    manifest.json          Dataset, topology, and epoch matrix
+    catalog.py             Resolved experiment configurations
 scripts/                   Monitoring and metric plotting
+  run_paper_experiments.py Compose generation, execution, and summaries
 tests/                     Generic runtime and experiment regression tests
 results/
+  paper/                   Runner results grouped by experiment and run ID
   mnist/                   Generated MNIST results
   cifar10/                 Generated CIFAR-10 results
   ecg-4/                   Generated four-client ECG results
@@ -74,8 +86,9 @@ Dockerfile's dataset pre-download step.
 ## Run an experiment
 
 Docker Engine or Docker Desktop with Compose v2 is required. Each image uses
-CPU-only PyTorch and downloads its dataset during the build, allowing the
-containers to run without internet access.
+CPU-only PyTorch. MNIST and CIFAR-10 download their datasets during the build.
+ECG and TON_IOT require external datasets mounted read-only at runtime. With
+these inputs available, containers can run without internet access.
 
 Build and start MNIST:
 
@@ -109,11 +122,31 @@ docker compose -f experiments/ecg/compose.4.yaml up
 Only run one stack at a time because their published host-port ranges overlap.
 In the eight-client stacks, client 7 waits for the other clients to become
 healthy and then starts the experiment; the four-client ECG stack uses client
-3. Monitor completion in another terminal:
+3. For the eight-client stacks, monitor completion in another terminal:
 
 ```bash
 python scripts/wait_for_run.py
 ```
+
+For the four-client ECG stack, monitor ports 8000 through 8003 with:
+
+```bash
+python scripts/wait_for_run.py --client-count 4
+```
+
+Use `--client-count N` for any positive number of clients. The script polls
+consecutive ports on `127.0.0.1`, starting at 8000 by default. For example, to
+monitor 12 clients on ports 9000 through 9011:
+
+```bash
+python scripts/wait_for_run.py --client-count 12 --base-port 9000
+```
+
+The script prints each client's state and round every five seconds, retries
+while APIs are unavailable, and exits successfully when every client is
+`completed`. If a client reports `failed`, it exits with an error; inspect that
+client's `/status` endpoint and container logs. The paper runner monitors its
+configured client count automatically.
 
 Stop the selected stack with:
 
@@ -214,20 +247,43 @@ The most useful settings are:
 
 `NEIGHBORS` may explicitly list comma-separated URLs. If omitted, clients
 derive ring neighbors from `CLIENT_ID`, `CLIENT_COUNT`, `GNS3_IP_PREFIX`, and
-`GNS3_IP_OFFSET`.
+`GNS3_IP_OFFSET`. An explicitly empty value (`NEIGHBORS=""`) gives the client
+no neighbors, for isolated local training or evaluation.
+
+### Migrate configuration from the main branch
+
+Replace `HEAD_CLIENT_ID=7` with `HEAD_CLIENT_IDS=7`. The old variable is no
+longer read; a custom head configured only through it will fall back to the
+default head list. Multiple heads use comma-separated IDs, such as
+`HEAD_CLIENT_IDS=3,7`, with one head per connected component.
+
+Automatic starts now use the configured `RUN_ID` instead of generating a UUID.
+Give every client in an execution the same value. Each process accepts one
+execution: repeating its run ID is idempotent, while a different ID conflicts
+after it has started. Recreate the containers to start another execution.
+
+The standalone Compose stacks fix their head IDs and neighbor URLs. Changing
+those requires editing their Compose configuration; adding environment values
+to an `.env` file only overrides variables referenced by that Compose file.
 
 ## Round behavior and API
 
 For every round, each client:
 
-1. trains a copy of its latest model on its local partition;
-2. fetches the latest snapshots from both ring neighbors;
-3. performs sample-count-weighted FedAvg over the available models;
+1. trains a copy of its latest model if it has a nonempty local partition;
+2. fetches the latest snapshots from its configured neighbors;
+3. performs FedAvg over the available models with weight `max(sample_count, 1)`;
 4. atomically publishes the aggregate; and
 5. evaluates and records the new model.
 
+Clients listed in `EMPTY_CLIENT_IDS` receive no training samples. They skip
+local training, record an empty `train` metrics object, and still exchange,
+aggregate, and evaluate models. Their models retain aggregation weight 1;
+`sample_count` remains 0 in model headers and metrics. Nonempty clients use
+their number of unique local training examples as the aggregation weight.
+
 Clients are asynchronous. An unavailable neighbor is recorded and skipped after
-the configured retries. A start run ID is flooded around the ring and accepted
+the configured retries. A start run ID is forwarded through configured neighbors and accepted
 exactly once by every process.
 
 The HTTP interface is unchanged:
@@ -236,6 +292,21 @@ The HTTP interface is unchanged:
 - `POST /start`: accepts `{"run_id": "experiment-name"}`.
 - `GET /model`: current trusted PyTorch state dictionary and version headers.
 - `GET /status`: progress, latest metrics, neighbor versions, and errors.
+
+Status and round metrics also identify the experiment, topology, connected
+component, head status, presence of local data, and paper role. The paper runner
+sets `EXPERIMENT_ID`, `TOPOLOGY_NAME`, `COMPONENT_ID`, `COMPONENT_SIZE`, and
+`PAPER_ROLE` from the resolved graph. For manual custom deployments, configure
+these metadata fields to match the graph; the runtime does not infer them.
+
+### Interpret metrics
+
+MNIST, CIFAR-10, and TON_IOT report the fraction of examples classified
+correctly. ECG is multilabel: predictions use `sigmoid(logits) >= 0.5`, and
+`accuracy` counts a record as correct only when all 20 label decisions match
+its target. ECG loss is binary cross-entropy with logits averaged over all
+label decisions. These accuracy definitions should be considered when comparing
+datasets.
 
 ## Plot metrics
 
@@ -284,6 +355,28 @@ Results and resolved configuration are stored under
 writes CSV/Markdown summaries and accuracy/loss charts, then removes the
 containers.
 
+The paper roles describe each client's data and designated control status:
+
+| Role | Meaning |
+| ---- | ------- |
+| `R` | Regular client with local training data |
+| `E` | Empty client without local training data |
+| `D` | Disconnected control with local training data |
+| `ED` | Disconnected control without local training data |
+
+`is_connected` is true when the client's component has more than one member.
+The reported "Connected E/R average accuracy" is the unweighted arithmetic
+mean of final test accuracies for connected clients with roles `E` or `R`.
+Roles `D` and `ED` and all singleton components are excluded, but still appear
+in per-client summaries. When no client is eligible, the aggregate is `n/a`.
+
+Regenerate summaries for an existing run or a collection of runs with:
+
+```bash
+python scripts/run_paper_experiments.py summarize results/paper/<experiment-id>/<run-id>
+python scripts/run_paper_experiments.py summarize results/paper
+```
+
 TON_IOT is not redistributed. Download `Train_Test_Network.csv` from the
 official dataset and provide it as a read-only input:
 
@@ -291,6 +384,15 @@ official dataset and provide it as a read-only input:
 python scripts/run_paper_experiments.py smoke ton_iot-8p2-top4-e32 \
   --ton-iot-path C:/datasets/Train_Test_Network.csv
 ```
+
+For direct runtime configuration, set `TRAINER_MODULE=experiments.ton_iot.trainer`
+and `TON_IOT_PATH` to the CSV path visible inside the client container. The
+runner mounts the file read-only and sets this path automatically. The CSV must
+contain `ts`, `type`, and a binary `label` (0 or 1), alongside numeric and
+categorical feature columns. The trainer removes `ts` and `type`, creates a
+seeded stratified 80/20 train/test split, and fits numeric scaling and one-hot
+encoding on the training split before assigning local partitions. It records
+preprocessing metadata under the run's results directory.
 
 ## Build for GNS3
 
