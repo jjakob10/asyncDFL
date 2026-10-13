@@ -208,6 +208,18 @@ repartitions the combined training rows. The four-client topology therefore
 matches FedCVD's client count but does not map one runtime client to one source
 location.
 
+ECG reads HDF5 with `pyfive==1.2.1`, a Python reader that does not load the
+native `h5py` extensions blocked by Smart App Control on some Windows systems.
+The input layout and files stay the same. Reinstall dependencies with
+`python -m pip install -r requirements-dev.txt` and rebuild the ECG image after
+updating this checkout. No change to Windows security settings is required.
+
+The test suite validates synthetic HDF5 files with contiguous and gzip storage,
+including float16 signals and invalid records. Some HDF5 features or compression
+filters may not be supported by pyfive. Compatibility and performance with your
+real FedCVD files must be checked separately; read errors include the file and
+record ID, and the trainer does not fall back to h5py.
+
 For a quick smoke test, use:
 
 ```dotenv
@@ -453,6 +465,11 @@ docker compose -f experiments/ecg/compose.4.yaml config --quiet
 The suite covers trainer discovery and validation, model smoke training,
 partitions, federation, API behavior, ring propagation, unavailable neighbors,
 atomic version updates, and result files.
+
+ECG tests read versioned synthetic fixtures and do not require h5py. Their
+provenance and isolated Linux/Docker regeneration procedure are documented in
+`tests/fixtures/ecg/README.md`. The fixture generator requires h5py only in that
+separate maintenance environment.
 
 ## Security boundary
 

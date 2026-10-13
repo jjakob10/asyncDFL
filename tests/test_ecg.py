@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import math
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
-import h5py
-import numpy as np
 import pandas as pd
 import pytest
 import torch
@@ -47,67 +48,25 @@ def _settings(
     )
 
 
+FIXTURES = Path(__file__).parent / "fixtures" / "ecg"
+
+
 def _write_ecg_data(
     data_dir: Path,
     *,
-    locations: int = 2,
-    train_rows: int = 12,
-    test_rows: int = 2,
     sample_shape: tuple[int, int] = (12, 5_000),
     nonfinite: bool = False,
     omit_first_test_record: bool = False,
+    storage: str = "contiguous",
 ) -> Path:
-    root = data_dir / "ECG" / "preprocessed"
-    for location_index in range(locations):
-        location = f"client{location_index + 1}"
-        location_dir = root / location
-        location_dir.mkdir(parents=True)
-        train_metadata: list[dict[str, object]] = []
-        test_metadata: list[dict[str, object]] = []
-        with h5py.File(location_dir / "records.h5", "w") as records:
-            for split, row_count, metadata in (
-                ("train", train_rows, train_metadata),
-                ("test", test_rows, test_metadata),
-            ):
-                for row_index in range(row_count):
-                    ecg_id = (
-                        f"{location_index + 1}{0 if split == 'train' else 1}"
-                        f"{row_index:04d}"
-                    )
-                    metadata.append(
-                        {
-                            "ECG_ID": ecg_id,
-                            "Code_Label": (
-                                "0;1" if row_index % 2 == 0 else "2"
-                            ),
-                            "Location": location,
-                        }
-                    )
-                    if (
-                        omit_first_test_record
-                        and location_index == 0
-                        and split == "test"
-                        and row_index == 0
-                    ):
-                        continue
-                    sample = np.zeros(sample_shape, dtype=np.float16)
-                    if (
-                        nonfinite
-                        and location_index == 0
-                        and split == "test"
-                        and row_index == 0
-                    ):
-                        sample[0, 0] = np.nan
-                    records.create_dataset(ecg_id, data=sample)
-        pd.DataFrame(train_metadata).to_csv(
-            location_dir / "train.csv",
-            index=False,
-        )
-        pd.DataFrame(test_metadata).to_csv(
-            location_dir / "test.csv",
-            index=False,
-        )
-    return root
+    case = (
+        "wrong_shape" if sample_shape != (12, 5_000)
+        else "nonfinite" if nonfinite
+        else "missing_record" if omit_first_test_record
+        else storage
+    )
+    shutil.copytree(FIXTURES / case / "ECG", data_dir / "ECG")
+    return data_dir / "ECG" / "preprocessed"
 
 
 class TinyECGModel(nn.Module):
@@ -162,11 +121,13 @@ def test_train_and_evaluate_return_compatible_cpu_state(
 
 
 @pytest.mark.parametrize("partition_mode", ["iid", "dirichlet"])
+@pytest.mark.parametrize("storage", ["contiguous", "gzip"])
 def test_load_data_is_deterministic_and_uses_common_test_set(
     tmp_path: Path,
     partition_mode: str,
+    storage: str,
 ) -> None:
-    _write_ecg_data(tmp_path)
+    _write_ecg_data(tmp_path, storage=storage)
     config = _settings(
         tmp_path,
         partition_mode=partition_mode,
@@ -187,6 +148,87 @@ def test_load_data_is_deterministic_and_uses_common_test_set(
     assert inputs.shape[1:] == (12, 5_000)
     assert targets.shape[1:] == (20,)
     assert targets.dtype == torch.float32
+
+
+@pytest.mark.parametrize("storage", ["contiguous", "gzip"])
+def test_dataset_preserves_values_and_label_associations(
+    tmp_path: Path, storage: str
+) -> None:
+    _write_ecg_data(tmp_path, storage=storage)
+    dataset = trainer.ECGDataset(
+        trainer._read_split(tmp_path / "ECG" / "preprocessed", "test")
+    )
+    try:
+        for index, value in enumerate((21, 22, 121, 122)):
+            inputs, targets = dataset[index]
+            expected = torch.full((12, 5_000), float(value))
+            expected[0, 0] = -value
+            expected[1, 1] = value + 0.5
+            torch.testing.assert_close(inputs, expected, rtol=0, atol=0)
+            expected_labels = torch.zeros(20)
+            expected_labels[[0, 1] if index % 2 == 0 else [2]] = 1
+            torch.testing.assert_close(targets, expected_labels, rtol=0, atol=0)
+        assert len(dataset._files) == 2
+    finally:
+        dataset.close()
+    dataset.close()
+    assert dataset._files == {}
+
+
+def test_trainer_import_does_not_load_h5py() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; from experiments.ecg import trainer; "
+            "assert 'h5py' not in sys.modules",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_dataset_can_close_after_incomplete_initialization() -> None:
+    dataset = trainer.ECGDataset.__new__(trainer.ECGDataset)
+    dataset.close()
+    dataset.__del__()
+
+
+def test_dataset_reports_corrupt_file_with_record_context(tmp_path: Path) -> None:
+    root = _write_ecg_data(tmp_path)
+    dataset = trainer.ECGDataset(trainer._read_split(root, "test"))
+    records_path = root / "client1" / "records.h5"
+    records_path.write_bytes(b"not HDF5")
+    with pytest.raises(OSError, match="records.h5.*110000") as error:
+        dataset[0]
+    assert error.value.__cause__ is not None
+    dataset.close()
+
+
+def test_dataset_reports_read_error_with_record_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _write_ecg_data(tmp_path)
+    dataset = trainer.ECGDataset(trainer._read_split(root, "test"))
+
+    class UnsupportedFile:
+        def __contains__(self, key):
+            return True
+
+        def __getitem__(self, key):
+            raise NotImplementedError("unsupported HDF5 filter")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(trainer.pyfive, "File", lambda *args: UnsupportedFile())
+    with pytest.raises(RuntimeError, match="records.h5.*110000") as error:
+        dataset[0]
+    assert isinstance(error.value.__cause__, NotImplementedError)
+    dataset.close()
 
 
 def test_empty_client_has_no_training_loader(tmp_path: Path) -> None:

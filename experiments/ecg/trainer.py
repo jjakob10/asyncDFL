@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import h5py
 import numpy as np
 import pandas as pd
+import pyfive
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset, Subset
@@ -102,8 +102,8 @@ class ECGDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
     """Lazy reader for FedCVD's preprocessed ECG records."""
 
     def __init__(self, frame: pd.DataFrame) -> None:
+        self._files: dict[str, pyfive.File] = {}
         self.frame = frame.reset_index(drop=True)
-        self._files: dict[str, h5py.File] = {}
 
     def __len__(self) -> int:
         return len(self.frame)
@@ -111,18 +111,28 @@ class ECGDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
     def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
         row = self.frame.iloc[index]
         records_path = str(row[INTERNAL_RECORDS_COLUMN])
+        ecg_id = str(row["ECG_ID"])
         records = self._files.get(records_path)
         if records is None:
             try:
-                records = h5py.File(records_path, "r")
-            except OSError as exc:
-                raise OSError(f"could not open ECG records file: {records_path}") from exc
+                records = pyfive.File(records_path, "r")
+            except Exception as exc:
+                raise OSError(
+                    f"could not open ECG records file: {records_path} "
+                    f"for ECG record {ecg_id!r}"
+                ) from exc
             self._files[records_path] = records
 
-        ecg_id = str(row["ECG_ID"])
-        if ecg_id not in records:
-            raise KeyError(f"{records_path}: missing ECG record {ecg_id!r}")
-        inputs = np.asarray(records[ecg_id][...], dtype=np.float32)
+        try:
+            inputs = np.asarray(records[ecg_id][...], dtype=np.float32)
+        except KeyError as exc:
+            raise KeyError(
+                f"{records_path}: missing ECG record {ecg_id!r}"
+            ) from exc
+        except Exception as exc:
+            raise RuntimeError(
+                f"{records_path}: could not read ECG record {ecg_id!r}"
+            ) from exc
         if inputs.shape != (INPUT_CHANNELS, INPUT_LENGTH):
             raise ValueError(
                 f"{records_path}: ECG record {ecg_id!r} has shape "
@@ -138,9 +148,11 @@ class ECGDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
         return torch.from_numpy(inputs), targets
 
     def close(self) -> None:
-        for records in self._files.values():
+        files = getattr(self, "_files", {})
+        opened = list(files.values())
+        files.clear()
+        for records in opened:
             records.close()
-        self._files.clear()
 
     def __del__(self) -> None:
         self.close()

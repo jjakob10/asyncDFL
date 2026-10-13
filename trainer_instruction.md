@@ -235,6 +235,10 @@ Important data rules:
   expected to run without internet access. MNIST and CIFAR-10 use data
   downloaded during image construction; ECG and TON_IOT use external data
   mounted read-only at runtime.
+- The ECG trainer reads HDF5 with `pyfive==1.2.1`; do not add a runtime h5py
+  fallback. Test fixtures are synthetic, versioned, and regenerated with h5py
+  in a separate Linux environment. Validate unsupported HDF5 features and
+  performance against real input files before claiming full dataset support.
 - Use `num_workers=0` unless the experiment has a tested reason to change it;
   this is reliable inside the existing containers.
 - Fit data-dependent preprocessing without test leakage. All clients must
