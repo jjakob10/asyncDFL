@@ -1,6 +1,7 @@
 from pathlib import Path
 import time
 
+import pytest
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
@@ -116,21 +117,27 @@ def test_empty_client_skips_training_and_completes(tmp_path: Path) -> None:
     assert record["aggregation_weight"] == 1
 
 
-def test_start_flood_visits_eight_node_ring_once(monkeypatch, tmp_path: Path) -> None:
+@pytest.mark.parametrize("client_count", [4, 8])
+@pytest.mark.parametrize("topology", ["ring", "star"])
+def test_start_flood_visits_topology_once(
+    monkeypatch, tmp_path: Path, client_count: int, topology: str
+) -> None:
     runtimes: dict[str, ClientRuntime] = {}
-    executions = [0] * 8
-    run_id = "ring-run"
+    executions = [0] * client_count
+    run_id = f"{topology}-run"
+    head = client_count - 1 if topology == "ring" else 0
 
-    for client_id in range(8):
-        left = (client_id - 1) % 8
-        right = (client_id + 1) % 8
+    for client_id in range(client_count):
+        if topology == "ring":
+            neighbors = ((client_id - 1) % client_count, (client_id + 1) % client_count)
+        else:
+            neighbors = tuple(range(1, client_count)) if client_id == 0 else (0,)
         settings = Settings(
             client_id=client_id,
             client_name=f"client-{client_id}",
-            neighbors=(
-                f"http://client-{left}:8000",
-                f"http://client-{right}:8000",
-            ),
+            client_count=client_count,
+            head_client_ids=(head,),
+            neighbors=tuple(f"http://client-{item}:8000" for item in neighbors),
             results_dir=str(tmp_path),
         )
         runtimes[f"http://client-{client_id}:8000"] = ClientRuntime(
@@ -144,12 +151,17 @@ def test_start_flood_visits_eight_node_ring_once(monkeypatch, tmp_path: Path) ->
 
         def propagate(node=runtime, node_id=client_id):
             executions[node_id] += 1
-            for neighbor in node.settings.neighbors:
-                runtimes[neighbor].start(run_id)
+            node._forward_start()
+
+        def request(method, url, **kwargs):
+            assert method == "POST"
+            assert url.endswith("/start")
+            runtimes[url.removesuffix("/start")].start(kwargs["json"]["run_id"])
 
         monkeypatch.setattr(runtime, "_execute", propagate)
+        monkeypatch.setattr(runtime, "_request_with_retries", request)
 
-    assert runtimes["http://client-7:8000"].start(run_id) == "started"
+    assert runtimes[f"http://client-{head}:8000"].start(run_id) == "started"
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline and any(
         runtime.status()["run_id"] is None for runtime in runtimes.values()
@@ -159,4 +171,6 @@ def test_start_flood_visits_eight_node_ring_once(monkeypatch, tmp_path: Path) ->
         runtime.wait(timeout=1)
 
     assert all(runtime.status()["run_id"] == run_id for runtime in runtimes.values())
-    assert executions == [1] * 8
+    assert executions == [1] * client_count
+    for runtime in runtimes.values():
+        assert runtime.start(run_id) == "already_started"

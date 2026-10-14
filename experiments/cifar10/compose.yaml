@@ -1,15 +1,22 @@
+name: dfl-cifar10-ring-8
+
 x-common-environment: &common-environment
   TRAINER_MODULE: "${TRAINER_MODULE:-experiments.cifar10.trainer}"
   CLIENT_COUNT: "8"
   HEAD_CLIENT_IDS: "7"
-  RUN_ID: "${RUN_ID:-cifar10-ring}"
+  RUN_ID: "${RUN_ID:-cifar10-ring-8}"
+  EXPERIMENT_ID: "cifar10-ring-8"
+  TOPOLOGY_NAME: "ring"
+  COMPONENT_ID: "0"
+  COMPONENT_SIZE: "8"
   ROUNDS: "${ROUNDS:-10}"
   LOCAL_EPOCHS: "${LOCAL_EPOCHS:-1}"
   BATCH_SIZE: "${BATCH_SIZE:-64}"
   LEARNING_RATE: "${LEARNING_RATE:-0.01}"
   MOMENTUM: "${MOMENTUM:-0.9}"
-  PARTITION_MODE: "${PARTITION_MODE:-iid}"
+  PARTITION_MODE: "${PARTITION_MODE:-dirichlet}"
   DIRICHLET_ALPHA: "${DIRICHLET_ALPHA:-0.5}"
+  MIN_PARTITION_SIZE: "${MIN_PARTITION_SIZE:-100}"
   SEED: "${SEED:-42}"
   REQUEST_TIMEOUT: "${REQUEST_TIMEOUT:-5}"
   REQUEST_RETRIES: "${REQUEST_RETRIES:-3}"
@@ -23,7 +30,7 @@ x-client: &client
   image: dfl-cifar10:latest
   restart: "no"
   volumes:
-    - ../../results/cifar10:/results
+    - ../../results/cifar10-ring-8:/results
   healthcheck:
     test:
       - CMD

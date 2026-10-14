@@ -3,7 +3,9 @@
 This repository provides a generic decentralized federated learning client and
 pluggable experiment trainers. Independent FastAPI clients train on disjoint
 dataset partitions and exchange model snapshots with their configured neighbors.
-The standalone Compose stacks use rings of eight clients, or four for ECG.
+The standalone MNIST and CIFAR-10 Compose stacks support rings and stars of
+four or eight clients, with non-IID Dirichlet training partitions by default.
+ECG supports rings of four or eight clients.
 The paper experiment runner also supports regular and irregular graphs,
 isolated clients, and clients without local training data.
 
@@ -26,12 +28,18 @@ experiments/
   mnist/
     trainer.py             MNIST model, data, training, and evaluation
     Dockerfile
-    compose.yaml
+    compose.yaml           Eight-client ring
+    compose.4.yaml         Four-client ring
+    compose.star.4.yaml    Four-client star
+    compose.star.8.yaml    Eight-client star
     .env.example
   cifar10/
     trainer.py             CIFAR-10 model, data, training, and evaluation
     Dockerfile
-    compose.yaml
+    compose.yaml           Eight-client ring
+    compose.4.yaml         Four-client ring
+    compose.star.4.yaml    Four-client star
+    compose.star.8.yaml    Eight-client star
     .env.example
   ecg/
     trainer.py             ECG model, lazy HDF5 data, training, and evaluation
@@ -50,8 +58,8 @@ scripts/                   Monitoring and metric plotting
 tests/                     Generic runtime and experiment regression tests
 results/
   paper/                   Runner results grouped by experiment and run ID
-  mnist/                   Generated MNIST results
-  cifar10/                 Generated CIFAR-10 results
+  mnist-{ring,star}-{4,8}/   Generated MNIST results by topology and size
+  cifar10-{ring,star}-{4,8}/ Generated CIFAR-10 results by topology and size
   ecg-4/                   Generated four-client ECG results
   ecg-8/                   Generated eight-client ECG results
 ```
@@ -104,6 +112,39 @@ docker compose -f experiments/cifar10/compose.yaml build
 docker compose -f experiments/cifar10/compose.yaml up
 ```
 
+Choose one standalone configuration from this matrix. Each file defines the
+entire experiment; use it directly rather than combining it with another file.
+
+| Dataset | Topology | Nodes | Compose file | Results directory |
+| ------- | -------- | ----: | ------------ | ----------------- |
+| MNIST | Ring | 4 | `experiments/mnist/compose.4.yaml` | `results/mnist-ring-4/` |
+| MNIST | Ring | 8 | `experiments/mnist/compose.yaml` | `results/mnist-ring-8/` |
+| MNIST | Star | 4 | `experiments/mnist/compose.star.4.yaml` | `results/mnist-star-4/` |
+| MNIST | Star | 8 | `experiments/mnist/compose.star.8.yaml` | `results/mnist-star-8/` |
+| CIFAR-10 | Ring | 4 | `experiments/cifar10/compose.4.yaml` | `results/cifar10-ring-4/` |
+| CIFAR-10 | Ring | 8 | `experiments/cifar10/compose.yaml` | `results/cifar10-ring-8/` |
+| CIFAR-10 | Star | 4 | `experiments/cifar10/compose.star.4.yaml` | `results/cifar10-star-4/` |
+| CIFAR-10 | Star | 8 | `experiments/cifar10/compose.star.8.yaml` | `results/cifar10-star-8/` |
+
+Every node receives a disjoint training partition and trains, including the
+star center (`client-0`). Ring nodes exchange models with their two adjacent
+neighbors. Star leaves exchange only with the center, which exchanges with
+all leaves. Both topologies use the existing asynchronous decentralized
+rounds. All nodes evaluate on the same test set (or the same capped subset).
+The run ID defaults to the dataset, topology, and node count, such as
+`mnist-star-4`; each stack also has a distinct Compose project name.
+
+For example, build, start, monitor, and stop the four-node MNIST star:
+
+```bash
+docker compose -f experiments/mnist/compose.star.4.yaml build
+docker compose -f experiments/mnist/compose.star.4.yaml up -d
+python scripts/wait_for_run.py --client-count 4
+docker compose -f experiments/mnist/compose.star.4.yaml down
+```
+
+Substitute any file from the matrix and use `--client-count 8` for eight nodes.
+
 ECG uses an external preprocessed FedCVD data tree. Build and start the
 eight-client ring:
 
@@ -120,15 +161,16 @@ docker compose -f experiments/ecg/compose.4.yaml up
 ```
 
 Only run one stack at a time because their published host-port ranges overlap.
-In the eight-client stacks, client 7 waits for the other clients to become
-healthy and then starts the experiment; the four-client ECG stack uses client
-3. For the eight-client stacks, monitor completion in another terminal:
+In rings, the last client (3 or 7) waits for the other clients to become
+healthy and then starts the experiment. Stars use client 0 as the initiator.
+The node count and initiator are fixed by the selected Compose file.
+For eight-client stacks, monitor completion in another terminal:
 
 ```bash
 python scripts/wait_for_run.py
 ```
 
-For the four-client ECG stack, monitor ports 8000 through 8003 with:
+For four-client stacks, monitor ports 8000 through 8003 with:
 
 ```bash
 python scripts/wait_for_run.py --client-count 4
@@ -169,6 +211,50 @@ cp experiments/mnist/.env.example experiments/mnist/.env
 docker compose --env-file experiments/mnist/.env \
   -f experiments/mnist/compose.yaml up
 ```
+
+The same dataset `.env` works with all four of its topology files. The MNIST
+and CIFAR-10 Compose defaults are `PARTITION_MODE=dirichlet`,
+`DIRICHLET_ALPHA=0.5`, `MIN_PARTITION_SIZE=100`, and `SEED=42`.
+Set these in `.env` or change their defaults in the selected Compose file.
+Use `PARTITION_MODE=iid` to select uniform random splitting instead.
+
+Dirichlet draws a distribution across clients independently for each class.
+Smaller positive alpha values generally produce more concentrated class
+distributions; larger values tend toward more even distributions. Partition
+sizes can differ. The seed makes the partition reproducible for the same
+dataset, sample cap, number of clients, and partition parameters.
+
+For a quick smoke test, copy the dataset's `.env.example` to `.env` and edit
+these values (the training cap applies globally before partitioning):
+
+```dotenv
+ROUNDS=1
+PARTITION_MODE=dirichlet
+DIRICHLET_ALPHA=0.5
+MIN_PARTITION_SIZE=100
+MAX_TRAIN_SAMPLES=800
+MAX_TEST_SAMPLES=200
+```
+
+Then run, for example, the eight-node CIFAR-10 star:
+
+```bash
+docker compose --env-file experiments/cifar10/.env \
+  -f experiments/cifar10/compose.star.8.yaml up --build -d
+python scripts/wait_for_run.py --client-count 8
+docker compose --env-file experiments/cifar10/.env \
+  -f experiments/cifar10/compose.star.8.yaml down
+```
+
+The image trainers automatically lower the requested minimum partition size
+to `min(MIN_PARTITION_SIZE, max(1, training_samples // CLIENT_COUNT // 2))`.
+For 800 training samples and eight clients, the effective minimum is 50.
+Dirichlet sampling retries until every partition meets that minimum; an
+impossible dataset size or exhaustion of the 1,000 attempts produces an error.
+Use at least one training sample per client. Sample caps of zero use the full
+datasets. Recreate containers for a new execution; choose a custom `RUN_ID`
+and archive existing results if you want to preserve multiple runs of the
+same configuration.
 
 For ECG, copy the shared example and set `ECG_DATA_DIR` to the host directory
 containing `ECG/preprocessed`:
@@ -256,6 +342,10 @@ The most useful settings are:
 | `MAX_TRAIN_SAMPLES`  |           `0` | Optional global training cap           |
 | `MAX_TEST_SAMPLES`   |           `0` | Optional test cap                      |
 | `TORCH_NUM_THREADS`  |           `1` | CPU threads per client                 |
+
+These are application defaults. The standalone MNIST/CIFAR-10 Compose files
+override partition mode to `dirichlet`, and set identity and topology metadata
+for the selected experiment. The paper catalog keeps its existing defaults.
 
 `NEIGHBORS` may explicitly list comma-separated URLs. If omitted, clients
 derive ring neighbors from `CLIENT_ID`, `CLIENT_COUNT`, `GNS3_IP_PREFIX`, and

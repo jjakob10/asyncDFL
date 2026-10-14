@@ -1,0 +1,142 @@
+name: dfl-mnist-star-8
+
+x-common-environment: &common-environment
+  TRAINER_MODULE: "${TRAINER_MODULE:-experiments.mnist.trainer}"
+  CLIENT_COUNT: "8"
+  HEAD_CLIENT_IDS: "0"
+  RUN_ID: "${RUN_ID:-mnist-star-8}"
+  EXPERIMENT_ID: "mnist-star-8"
+  TOPOLOGY_NAME: "star"
+  COMPONENT_ID: "0"
+  COMPONENT_SIZE: "8"
+  ROUNDS: "${ROUNDS:-10}"
+  LOCAL_EPOCHS: "${LOCAL_EPOCHS:-1}"
+  BATCH_SIZE: "${BATCH_SIZE:-64}"
+  LEARNING_RATE: "${LEARNING_RATE:-0.01}"
+  MOMENTUM: "${MOMENTUM:-0.9}"
+  PARTITION_MODE: "${PARTITION_MODE:-dirichlet}"
+  DIRICHLET_ALPHA: "${DIRICHLET_ALPHA:-0.5}"
+  MIN_PARTITION_SIZE: "${MIN_PARTITION_SIZE:-100}"
+  SEED: "${SEED:-42}"
+  REQUEST_TIMEOUT: "${REQUEST_TIMEOUT:-5}"
+  REQUEST_RETRIES: "${REQUEST_RETRIES:-3}"
+  RETRY_DELAY: "${RETRY_DELAY:-1}"
+  HEAD_START_DELAY: "${HEAD_START_DELAY:-5}"
+  MAX_TRAIN_SAMPLES: "${MAX_TRAIN_SAMPLES:-0}"
+  MAX_TEST_SAMPLES: "${MAX_TEST_SAMPLES:-0}"
+  TORCH_NUM_THREADS: "${TORCH_NUM_THREADS:-1}"
+
+x-client: &client
+  image: dfl-mnist:latest
+  restart: "no"
+  volumes:
+    - ../../results/mnist-star-8:/results
+  healthcheck:
+    test:
+      - CMD
+      - python
+      - -c
+      - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"
+    interval: 5s
+    timeout: 3s
+    start_period: 20s
+    retries: 12
+
+services:
+  client-0:
+    <<: *client
+    build:
+      context: ../..
+      dockerfile: experiments/mnist/Dockerfile
+    ports:
+      - "8000:8000"
+    depends_on:
+      client-1:
+        condition: service_healthy
+      client-2:
+        condition: service_healthy
+      client-3:
+        condition: service_healthy
+      client-4:
+        condition: service_healthy
+      client-5:
+        condition: service_healthy
+      client-6:
+        condition: service_healthy
+      client-7:
+        condition: service_healthy
+    environment:
+      <<: *common-environment
+      CLIENT_ID: "0"
+      CLIENT_NAME: "client-0"
+      NEIGHBORS: "http://client-1:8000,http://client-2:8000,http://client-3:8000,http://client-4:8000,http://client-5:8000,http://client-6:8000,http://client-7:8000"
+
+  client-1:
+    <<: *client
+    ports:
+      - "8001:8000"
+    environment:
+      <<: *common-environment
+      CLIENT_ID: "1"
+      CLIENT_NAME: "client-1"
+      NEIGHBORS: "http://client-0:8000"
+
+  client-2:
+    <<: *client
+    ports:
+      - "8002:8000"
+    environment:
+      <<: *common-environment
+      CLIENT_ID: "2"
+      CLIENT_NAME: "client-2"
+      NEIGHBORS: "http://client-0:8000"
+
+  client-3:
+    <<: *client
+    ports:
+      - "8003:8000"
+    environment:
+      <<: *common-environment
+      CLIENT_ID: "3"
+      CLIENT_NAME: "client-3"
+      NEIGHBORS: "http://client-0:8000"
+
+  client-4:
+    <<: *client
+    ports:
+      - "8004:8000"
+    environment:
+      <<: *common-environment
+      CLIENT_ID: "4"
+      CLIENT_NAME: "client-4"
+      NEIGHBORS: "http://client-0:8000"
+
+  client-5:
+    <<: *client
+    ports:
+      - "8005:8000"
+    environment:
+      <<: *common-environment
+      CLIENT_ID: "5"
+      CLIENT_NAME: "client-5"
+      NEIGHBORS: "http://client-0:8000"
+
+  client-6:
+    <<: *client
+    ports:
+      - "8006:8000"
+    environment:
+      <<: *common-environment
+      CLIENT_ID: "6"
+      CLIENT_NAME: "client-6"
+      NEIGHBORS: "http://client-0:8000"
+
+  client-7:
+    <<: *client
+    ports:
+      - "8007:8000"
+    environment:
+      <<: *common-environment
+      CLIENT_ID: "7"
+      CLIENT_NAME: "client-7"
+      NEIGHBORS: "http://client-0:8000"
