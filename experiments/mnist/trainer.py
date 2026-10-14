@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import torch
 from torch import nn
@@ -8,7 +10,7 @@ from torchvision import datasets, transforms
 
 from app.config import Settings
 from app.federation import StateDict
-from app.training import DataBundle, make_partitions
+from app.training import classification_confusion, DataBundle, make_partitions
 
 
 class MnistCNN(nn.Module):
@@ -160,3 +162,12 @@ def evaluate(state: StateDict, test_loader: DataLoader) -> dict[str, float]:
         "loss": total_loss / max(total_seen, 1),
         "accuracy": total_correct / max(total_seen, 1),
     }
+
+
+def evaluate_confusion(
+    state: StateDict, test_loader: DataLoader,
+) -> dict[str, Any]:
+    """Evaluate final confusion counts on this client's test set."""
+    return classification_confusion(
+        create_model(), state, test_loader, "multiclass", [str(i) for i in range(10)],
+    )

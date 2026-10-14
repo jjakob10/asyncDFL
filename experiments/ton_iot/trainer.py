@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import json
 from pathlib import Path
 
@@ -14,7 +16,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from app.config import Settings
 from app.federation import StateDict
-from app.training import DataBundle, make_partitions
+from app.training import classification_confusion, DataBundle, make_partitions
 
 
 _FEATURE_COUNT = 42
@@ -259,3 +261,12 @@ def evaluate(state: StateDict, test_loader: DataLoader) -> dict[str, float]:
         "loss": total_loss / max(total_seen, 1),
         "accuracy": total_correct / max(total_seen, 1),
     }
+
+
+def evaluate_confusion(
+    state: StateDict, test_loader: DataLoader,
+) -> dict[str, Any]:
+    """Evaluate final confusion counts on this client's test set."""
+    return classification_confusion(
+        create_model(), state, test_loader, "binary", ["0", "1"],
+    )

@@ -74,7 +74,8 @@ def test_summary_excludes_disconnected_controls_from_average(
 
     assert csv_path.is_file()
     assert "0.800000" in markdown_path.read_text(encoding="utf-8")
-    assert len(charts) == 2
+    assert len(charts) == 6
+    assert (tmp_path / "combined_test_accuracy_time.csv").is_file()
 
 
 def test_collection_summary_groups_experiment_runs(tmp_path: Path) -> None:
@@ -85,6 +86,8 @@ def test_collection_summary_groups_experiment_runs(tmp_path: Path) -> None:
         run_directory = tmp_path / topology / "shared-run"
         run_directory.mkdir(parents=True)
         record = {
+            "time": "2026-07-20T00:00:00+00:00",
+            "model_version": 1,
             "run_id": "shared-run",
             "experiment_id": f"mnist-{topology}",
             "topology_name": topology,

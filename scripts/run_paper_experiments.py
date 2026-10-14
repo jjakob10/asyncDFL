@@ -31,6 +31,9 @@ from experiments.paper.catalog import (
 )
 
 
+from scripts.plot_metrics import load_experiments, plot_final_metrics
+
+
 DEFAULT_RESULTS_ROOT = REPOSITORY_ROOT / "results" / "paper"
 DEFAULT_GENERATED_ROOT = DEFAULT_RESULTS_ROOT / ".generated"
 
@@ -191,7 +194,10 @@ def _load_final_records(run_directory: Path) -> list[dict[str, Any]]:
     return records
 
 
-def summarize_run(run_directory: Path) -> tuple[Path, Path, list[Path]]:
+def summarize_run(
+    run_directory: Path, show_client_points: bool = False,
+) -> tuple[Path, Path, list[Path]]:
+    experiments = load_experiments([run_directory])
     records = _load_final_records(run_directory)
     summary_rows: list[dict[str, Any]] = []
     for record in records:
@@ -287,10 +293,11 @@ def summarize_run(run_directory: Path) -> tuple[Path, Path, list[Path]]:
     figure.savefig(loss_path, dpi=150)
     plt.close(figure)
     chart_paths.append(loss_path)
+    chart_paths.extend(plot_final_metrics(experiments, run_directory, show_client_points))
     return csv_path, markdown_path, chart_paths
 
 
-def summarize_collection(root: Path) -> list[Path]:
+def summarize_collection(root: Path, show_client_points: bool = False) -> list[Path]:
     run_directories = sorted(
         {
             path.parent
@@ -303,7 +310,7 @@ def summarize_collection(root: Path) -> list[Path]:
 
     rows: list[dict[str, Any]] = []
     for run_directory in run_directories:
-        csv_path, _, _ = summarize_run(run_directory)
+        csv_path, _, _ = summarize_run(run_directory, show_client_points)
         with csv_path.open("r", encoding="utf-8", newline="") as stream:
             clients = list(csv.DictReader(stream))
         eligible = [
@@ -434,6 +441,7 @@ def _run_compose(
     compose_path: Path,
     experiment: PaperExperiment,
     run_directory: Path,
+    show_client_points: bool = False,
 ) -> int:
     base_command = ["docker", "compose", "-f", str(compose_path)]
     try:
@@ -446,7 +454,7 @@ def _run_compose(
             return started.returncode
         completed = wait_for_completion(experiment.client_count)
         if completed:
-            summarize_run(run_directory)
+            summarize_run(run_directory, show_client_points)
             return 0
         return 1
     except (OSError, TimeoutError, ValueError, json.JSONDecodeError) as exc:
@@ -505,6 +513,7 @@ def build_parser() -> argparse.ArgumentParser:
     for command in ("run", "smoke"):
         child = subparsers.add_parser(command)
         child.add_argument("experiment_ids", nargs="*")
+        child.add_argument("--show-client-points", action="store_true")
         child.add_argument("--all", action="store_true")
         child.add_argument("--dataset", choices=("mnist", "cifar10", "ton_iot"))
         child.add_argument("--topology")
@@ -515,6 +524,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     summary = subparsers.add_parser("summarize")
     summary.add_argument("run_directory", type=Path)
+    summary.add_argument("--show-client-points", action="store_true")
     return parser
 
 
@@ -527,10 +537,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "summarize":
         try:
             if list(args.run_directory.glob("client_*_metrics.jsonl")):
-                csv_path, markdown_path, charts = summarize_run(args.run_directory)
+                csv_path, markdown_path, charts = summarize_run(
+                    args.run_directory, args.show_client_points
+                )
                 written = [csv_path, markdown_path, *charts]
             else:
-                written = summarize_collection(args.run_directory)
+                written = summarize_collection(args.run_directory, args.show_client_points)
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
@@ -583,7 +595,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
         print(compose_path)
         print(run_directory)
-        result = _run_compose(compose_path, experiment, run_directory)
+        result = _run_compose(compose_path, experiment, run_directory, args.show_client_points)
         if result:
             return result
     return 0

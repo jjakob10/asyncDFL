@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import math
 import re
@@ -13,6 +14,7 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 import matplotlib
+import numpy as np
 
 matplotlib.use("Agg")
 from matplotlib import pyplot as plt
@@ -32,6 +34,8 @@ class MetricRecord:
     model_version: int
     time: datetime
     values: dict[str, dict[str, float]]
+    run_id: str | None = None
+    started_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -126,6 +130,9 @@ def load_metrics_file(path: Path, expected_client_id: int) -> list[MetricRecord]
             model_version = _parse_integer(
                 raw_record.get("model_version"), "model_version", location
             )
+            run_id = raw_record.get("run_id")
+            if run_id is not None and (not isinstance(run_id, str) or not run_id):
+                raise MetricsPlotError(f"{location}: run_id must be a non-empty string")
             timestamp = _parse_timestamp(raw_record.get("time"), location)
             values = {
                 phase: _parse_phase(raw_record, phase, location) for phase in PHASES
@@ -136,6 +143,11 @@ def load_metrics_file(path: Path, expected_client_id: int) -> list[MetricRecord]
                     model_version=model_version,
                     time=timestamp,
                     values=values,
+                    run_id=raw_record.get("run_id"),
+                    started_at=(
+                        _parse_timestamp(raw_record["started_at"], location)
+                        if raw_record.get("started_at") is not None else None
+                    ),
                 )
             )
 
@@ -179,6 +191,10 @@ def load_experiments(paths: Sequence[Path]) -> list[Experiment]:
             raise MetricsPlotError(
                 f"{path}: no client_<id>_metrics.jsonl files were found"
             )
+        run_ids = {record.run_id for records in clients.values()
+                   for record in records if record.run_id is not None}
+        if len(run_ids) > 1:
+            raise MetricsPlotError(f"{path}: metrics contain multiple run IDs")
         experiments.append(Experiment(path=path, label=label, clients=clients))
     return experiments
 
@@ -317,6 +333,219 @@ def plot_metrics(
     return written
 
 
+
+@dataclass(frozen=True)
+class CombinedSeries:
+    time: np.ndarray
+    mean: np.ndarray
+    std: np.ndarray
+    participants: np.ndarray
+    points: dict[int, tuple[np.ndarray, np.ndarray]]
+
+
+def build_combined_series(experiment: Experiment, metric: str) -> CombinedSeries:
+    """Interpolate within each client's observed interval on the union grid."""
+    records = [r for items in experiment.clients.values() for r in items]
+    starts = [r.started_at for r in records if r.started_at is not None]
+    if any(r.started_at is None for r in records):
+        print(f"warning: {experiment.label}: missing started_at; using the "
+              "first available timestamp as a fallback", file=sys.stderr)
+        starts.append(min(r.time for r in records))
+    origin = min(starts)
+    points = {}
+    for client_id, items in sorted(experiment.clients.items()):
+        # Choose the highest version, then the last line, before selecting metrics.
+        deduplicated: dict[datetime, MetricRecord] = {}
+        for record in items:
+            previous = deduplicated.get(record.time)
+            if previous is None or record.model_version >= previous.model_version:
+                deduplicated[record.time] = record
+        usable = [r for _, r in sorted(deduplicated.items())
+                  if metric in r.values["test"]]
+        if not usable:
+            print(f"warning: {experiment.label}: client {client_id} has no "
+                  f"test.{metric} values", file=sys.stderr)
+            continue
+        points[client_id] = (
+            np.array([(r.time - origin).total_seconds() for r in usable]),
+            np.array([r.values["test"][metric] for r in usable]),
+        )
+    grid = np.array(sorted({t for x, _ in points.values() for t in x}))
+    values = np.full((len(points), len(grid)), np.nan)
+    for index, (x, y) in enumerate(points.values()):
+        mask = (grid >= x[0]) & (grid <= x[-1])
+        values[index, mask] = np.interp(grid[mask], x, y)
+    participants = np.sum(np.isfinite(values), axis=0)
+    mean = np.full(len(grid), np.nan)
+    std = np.full(len(grid), np.nan)
+    for index in range(len(grid)):
+        available = values[np.isfinite(values[:, index]), index]
+        if available.size:
+            mean[index] = available.mean()
+            std[index] = available.std(ddof=0)
+    return CombinedSeries(grid, mean, std, participants, points)
+
+
+def plot_combined_metrics(
+    experiment: Experiment, output_dir: Path, show_client_points: bool = False,
+) -> list[Path]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    written = []
+    client_ids = sorted(experiment.clients)
+    colors = plt.get_cmap("turbo")
+    client_colors = {client: colors((i + 0.5) / len(client_ids))
+                     for i, client in enumerate(client_ids)}
+    for metric in ("accuracy", "loss"):
+        series = build_combined_series(experiment, metric)
+        if not series.points:
+            continue
+        figure, axis = plt.subplots(figsize=(10, 6))
+        # Break the drawn curve across intervals with no contributing client.
+        plot_time, plot_mean, plot_std = [], [], []
+        for i, instant in enumerate(series.time):
+            if i:
+                middle = (series.time[i - 1] + instant) / 2
+                if not any(x[0] <= middle <= x[-1]
+                           for x, _ in series.points.values()):
+                    plot_time.append(middle)
+                    plot_mean.append(float("nan"))
+                    plot_std.append(float("nan"))
+            plot_time.append(instant)
+            plot_mean.append(series.mean[i])
+            plot_std.append(series.std[i])
+        plot_mean = np.asarray(plot_mean)
+        plot_std = np.asarray(plot_std)
+        axis.plot(plot_time, plot_mean, color="black", marker=".",
+                  label="Mean", zorder=4)
+        axis.fill_between(plot_time, plot_mean - plot_std,
+                          plot_mean + plot_std, color="gray", alpha=0.25,
+                          label="±1 standard deviation")
+        if show_client_points:
+            for client_id, (x, y) in series.points.items():
+                axis.scatter(x, y, color=client_colors[client_id], s=22,
+                             alpha=0.75, label=f"Client {client_id}", zorder=3)
+        axis.set_title(f"{experiment.label} — test {metric}")
+        axis.set_xlabel("Elapsed time (s)")
+        axis.set_xlim(left=0)
+        axis.set_ylabel(f"Test {metric}")
+        axis.grid(alpha=0.3)
+        axis.legend(fontsize="small", ncol=2)
+        figure.tight_layout()
+        stem = f"combined_test_{metric}_time"
+        path = output_dir / f"{stem}.png"
+        figure.savefig(path, dpi=150)
+        plt.close(figure)
+        csv_path = output_dir / f"{stem}.csv"
+        with csv_path.open("w", encoding="utf-8", newline="") as stream:
+            writer = csv.writer(stream)
+            writer.writerow(["time_seconds", "mean", "std", "participants"])
+            writer.writerows(zip(series.time, series.mean, series.std,
+                                 series.participants))
+        written.extend([path, csv_path])
+    return written
+
+
+def load_confusion(path: Path, client_id: int, records: list[MetricRecord]) -> dict:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise MetricsPlotError(f"{path}: cannot load confusion: {exc}") from exc
+    if not isinstance(raw, dict) or raw.get("client_id") != client_id:
+        raise MetricsPlotError(f"{path}: invalid confusion client ID")
+    run_ids = {r.run_id for r in records if r.run_id is not None}
+    if run_ids and raw.get("run_id") not in run_ids:
+        raise MetricsPlotError(f"{path}: confusion run ID does not match metrics")
+    if raw.get("model_version") != max(r.model_version for r in records):
+        raise MetricsPlotError(f"{path}: confusion model version does not match final metrics")
+    kind = raw.get("classification_type")
+    labels = raw.get("labels")
+    if (kind not in ("multiclass", "binary", "multilabel")
+            or not isinstance(labels, list) or not labels):
+        raise MetricsPlotError(f"{path}: invalid classification type or labels")
+    if not all(isinstance(label, str) for label in labels):
+        raise MetricsPlotError(f"{path}: labels must be strings")
+    if kind == "binary" and len(labels) != 2:
+        raise MetricsPlotError(f"{path}: binary confusion requires two labels")
+    try:
+        counts = np.asarray(raw.get("counts"))
+    except ValueError as exc:
+        raise MetricsPlotError(f"{path}: invalid confusion counts") from exc
+    expected = (
+        (len(labels), 2, 2) if kind == "multilabel"
+        else (len(labels), len(labels))
+    )
+    if (counts.shape != expected or counts.dtype.kind not in "iu"
+            or np.any(counts < 0)):
+        raise MetricsPlotError(f"{path}: invalid confusion counts")
+    samples = raw.get("sample_count")
+    if isinstance(samples, bool) or not isinstance(samples, int) or samples < 0:
+        raise MetricsPlotError(f"{path}: invalid sample count")
+    totals = counts.sum(axis=(-2, -1))
+    if np.any(totals != samples):
+        raise MetricsPlotError(f"{path}: counts do not match sample count")
+    return raw
+
+
+def plot_confusions(experiment: Experiment, output_dir: Path) -> list[Path]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    written = []
+    for client_id, records in sorted(experiment.clients.items()):
+        source = experiment.path / f"client_{client_id}_confusion.json"
+        if not source.exists():
+            print(f"warning: {experiment.label}: client {client_id} has no final "
+                  "confusion artifact", file=sys.stderr)
+            continue
+        raw = load_confusion(source, client_id, records)
+        counts = np.asarray(raw["counts"])
+        multilabel = raw["classification_type"] == "multilabel"
+        matrices = counts if multilabel else counts[np.newaxis, ...]
+        columns = min(4, len(matrices))
+        rows = math.ceil(len(matrices) / columns)
+        figure, axes = plt.subplots(rows, columns,
+                                    figsize=(5 * columns, 4.5 * rows),
+                                    squeeze=False, layout="constrained")
+        maximum = max(int(counts.max()), 1)
+        for index, axis in enumerate(axes.flat):
+            if index >= len(matrices):
+                axis.set_visible(False)
+                continue
+            matrix = matrices[index]
+            labels = ["0", "1"] if multilabel else raw["labels"]
+            image = axis.imshow(matrix, cmap="Blues", vmin=0, vmax=maximum)
+            axis.set_xticks(range(len(labels)), labels, rotation=45, ha="right")
+            axis.set_yticks(range(len(labels)), labels)
+            axis.set_xlabel("Predicted class")
+            axis.set_ylabel("Actual class")
+            if multilabel:
+                axis.set_title(f"Diagnosis {raw['labels'][index]}")
+            for row in range(matrix.shape[0]):
+                for col in range(matrix.shape[1]):
+                    value = int(matrix[row, col])
+                    axis.text(col, row, str(value), ha="center", va="center",
+                              color="white" if value > maximum / 2 else "black")
+        figure.suptitle(f"{experiment.label} — Client {client_id} final confusion")
+        figure.colorbar(image, ax=[a for a in axes.flat if a.get_visible()],
+                        label="Count", shrink=0.8)
+        path = output_dir / f"client_{client_id}_confusion.png"
+        figure.savefig(path, dpi=150)
+        plt.close(figure)
+        written.append(path)
+    return written
+
+
+def plot_final_metrics(
+    experiments: Sequence[Experiment], output_dir: Path,
+    show_client_points: bool = False,
+) -> list[Path]:
+    written = []
+    for index, experiment in enumerate(experiments):
+        directory = output_dir if len(experiments) == 1 else (
+            output_dir / f"experiment_{index + 1}_{_safe_metric_name(experiment.label)}"
+        )
+        written.extend(plot_combined_metrics(experiment, directory, show_client_points))
+        written.extend(plot_confusions(experiment, directory))
+    return written
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -335,6 +564,10 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("train", "test", "both"),
         default="both",
         help="metric phase to plot (default: both)",
+    )
+    parser.add_argument(
+        "--show-client-points", action="store_true",
+        help="overlay original client observations on combined time plots",
     )
     parser.add_argument(
         "paths",
@@ -358,11 +591,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         experiments = load_experiments(experiment_paths)
         written = plot_metrics(experiments, output_dir, args.x_axis, args.phase)
+        written.extend(plot_final_metrics(experiments, output_dir,
+                                          args.show_client_points))
     except (MetricsPlotError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    print(f"wrote {len(written)} chart(s) to {output_dir}")
+    print(f"wrote {len(written)} artifact(s) to {output_dir}")
     return 0
 
 

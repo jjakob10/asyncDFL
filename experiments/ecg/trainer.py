@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from pathlib import Path
 
 import numpy as np
@@ -11,7 +13,7 @@ from torch.utils.data import DataLoader, Dataset, Subset
 
 from app.config import Settings
 from app.federation import StateDict
-from app.training import DataBundle, make_partitions
+from app.training import classification_confusion, DataBundle, make_partitions
 
 
 INPUT_CHANNELS = 12
@@ -423,3 +425,12 @@ def evaluate(state: StateDict, test_loader: DataLoader) -> dict[str, float]:
         "loss": float(total_loss / max(total_elements, 1)),
         "accuracy": float(total_correct / max(total_seen, 1)),
     }
+
+
+def evaluate_confusion(
+    state: StateDict, test_loader: DataLoader,
+) -> dict[str, Any]:
+    """Evaluate final confusion counts on this client's test set."""
+    return classification_confusion(
+        create_model(), state, test_loader, "multilabel", [str(i) for i in range(CLASS_COUNT)],
+    )

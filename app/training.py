@@ -4,7 +4,7 @@ import importlib
 import random
 from dataclasses import dataclass
 from types import ModuleType
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 
 import numpy as np
 import torch
@@ -146,3 +146,51 @@ def make_partitions(
     raise RuntimeError(
         f"could not create a Dirichlet partition with min_size={min_size}"
     )
+
+
+class ConfusionTrainer(Protocol):
+    """Optional trainer capability; not required by load_trainer."""
+
+    def evaluate_confusion(
+        self, state: StateDict, test_loader: DataLoader
+    ) -> dict[str, Any]: ...
+
+
+@torch.no_grad()
+def classification_confusion(
+    model: nn.Module,
+    state: StateDict,
+    test_loader: DataLoader,
+    kind: str,
+    labels: list[str],
+) -> dict[str, Any]:
+    """Count actual rows and predicted columns without retaining predictions."""
+    model.load_state_dict(state)
+    model.eval()
+    count = len(labels)
+    shape = (count, 2, 2) if kind == "multilabel" else (count, count)
+    counts = torch.zeros(shape, dtype=torch.int64)
+    total_seen = 0
+    for inputs, targets in test_loader:
+        outputs = model(inputs)
+        total_seen += targets.size(0)
+        if kind == "multiclass":
+            predicted = outputs.argmax(dim=1)
+            indices = targets.long().reshape(-1) * count + predicted.reshape(-1)
+            counts += torch.bincount(indices, minlength=count * count).reshape(shape)
+        else:
+            predicted = (torch.sigmoid(outputs) >= 0.5).long()
+            actual = targets.long().reshape(predicted.shape)
+            if kind == "multilabel":
+                offsets = torch.arange(count).reshape(1, -1) * 4
+                indices = (offsets + actual * 2 + predicted).reshape(-1)
+                counts += torch.bincount(indices, minlength=count * 4).reshape(shape)
+            else:
+                indices = (actual * 2 + predicted).reshape(-1)
+                counts += torch.bincount(indices, minlength=4).reshape(shape)
+    return {
+        "classification_type": kind,
+        "labels": labels,
+        "sample_count": total_seen,
+        "counts": counts.tolist(),
+    }

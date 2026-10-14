@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
@@ -193,6 +194,32 @@ class ClientRuntime:
         torch.save(state, temporary)
         os.replace(temporary, destination)
 
+    def _save_final_confusion(self) -> None:
+        evaluate = getattr(self.trainer, "evaluate_confusion", None)
+        if not callable(evaluate):
+            LOGGER.warning("client %s trainer has no evaluate_confusion capability",
+                           self.settings.client_id)
+            return
+        with self._lock:
+            state = clone_state_dict(self._model)
+            version = self._model_version
+        record = evaluate(state, self.data.test_loader)
+        record.update({
+            "client_id": self.settings.client_id,
+            "run_id": self._run_id,
+            "model_version": version,
+            "time": _utc_now(),
+        })
+        destination = Path(self.settings.results_dir) / (
+            f"client_{self.settings.client_id}_confusion.json"
+        )
+        temporary = destination.with_suffix(".tmp")
+        with temporary.open("w", encoding="utf-8") as stream:
+            json.dump(record, stream, allow_nan=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, destination)
+
     def _execute(self) -> None:
         try:
             self._forward_start()
@@ -229,6 +256,7 @@ class ClientRuntime:
                     round_errors = list(self._errors[error_cursor:])
                 record = {
                     "time": _utc_now(),
+                    "started_at": self._started_at,
                     "run_id": self._run_id,
                     "client_id": self.settings.client_id,
                     "round": round_number,
@@ -267,6 +295,7 @@ class ClientRuntime:
                 )
 
             self._save_final_model()
+            self._save_final_confusion()
             with self._lock:
                 self._state = "completed"
                 self._finished_at = _utc_now()

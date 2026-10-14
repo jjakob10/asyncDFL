@@ -423,6 +423,53 @@ python scripts/plot_metrics.py results/ecg-8 outputs/ecg-8
 
 Use `--phase train`, `--phase test`, or `--x-axis time` to change the plots.
 
+The plot command also writes two combined test charts for each experiment:
+`combined_test_accuracy_time.png` and `combined_test_loss_time.png`. These
+always use elapsed seconds, independently of the individual chart options.
+Elapsed time starts at the earliest client `started_at`; older results without
+that field fall back to the earliest available observation, with a warning.
+
+Each client's test values are linearly interpolated on the union of observation
+timestamps, only within that client's observed interval. The mean gives equal
+weight to each available client, including clients without training data and
+disconnected clients. Shading represents one population standard deviation
+above and below the mean, rather than a confidence interval. Participation can
+change over time: the matching CSV files report `time_seconds`, `mean`, `std`,
+and `participants`. A single participant has zero standard deviation; a client
+with one observation contributes only at that timestamp. No values are
+extrapolated beyond a client's observations. Duplicate timestamps use the
+highest model version, then the last line. Results from different run IDs must
+not be mixed in the same directory.
+
+Add `--show-client-points` to overlay every original test observation, with a
+distinct color and legend entry per client:
+
+```bash
+python scripts/plot_metrics.py --show-client-points results/mnist outputs/mnist
+```
+
+On successful completion, each built-in trainer writes
+`client_<id>_confusion.json` alongside the final checkpoint. It contains final
+test-set counts, client/run identifiers, model version, timestamp, labels, and
+the number of evaluated examples. The plot command renders it as
+`client_<id>_confusion.png`: actual classes are rows, predicted classes are
+columns, and cells contain absolute counts. MNIST/CIFAR-10 use 10×10 matrices;
+TON_IoT uses a binary 2×2 matrix. ECG uses a panel of 20 binary matrices, one
+per diagnosis code, with 0 meaning absent and 1 meaning present. Existing
+prediction rules and accuracy definitions are preserved.
+
+When several experiment directories are supplied, the new charts and CSVs are
+placed in separate `experiment_<index>_<label>` subdirectories. Existing
+per-client comparison charts remain in the output root. Older results without
+confusion artifacts still produce metric charts, with a warning.
+
+The paper runner generates these additional artifacts during `run`, `smoke`,
+and `summarize`; each command accepts `--show-client-points`. For example:
+
+```bash
+python scripts/run_paper_experiments.py summarize results/paper --show-client-points
+```
+
 ## Reproduce the GLow paper experiments
 
 The checked-in paper manifest expands to 158 decentralized configurations:

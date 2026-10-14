@@ -61,6 +61,40 @@ def evaluate(
 `app.training.load_trainer` verifies that the names exist and are callable, but
 it does not validate their return types. Follow the contract exactly.
 
+### Optional final confusion evaluation
+
+Classification trainers should also expose:
+
+```python
+def evaluate_confusion(state: StateDict, test_loader: DataLoader) -> dict: ...
+```
+
+The runtime calls this once after the final round, on the final aggregated
+model and this client's test loader. Keep `evaluate` unchanged: its return
+value still contains scalar metrics only. External trainers without this
+optional callable can complete normally, but log a warning and do not produce
+a confusion artifact.
+
+Return `classification_type` (`multiclass`, `binary`, or `multilabel`),
+`labels` (ordered strings), `sample_count` (evaluated examples), and `counts`
+(integer lists). Rows represent actual classes and columns predicted classes.
+For multiclass, counts have shape `[class_count, class_count]`; for binary,
+`[2, 2]`; for multilabel, `[label_count, 2, 2]`. Each multilabel matrix uses
+binary order `[0, 1]`. Include absent classes with zero counts. Each matrix
+must sum to `sample_count`.
+
+The shared `app.training.classification_confusion` helper loads the state into
+a supplied model, runs without gradients, and accumulates counts per batch.
+It uses argmax for multiclass and sigmoid >= 0.5 for binary/multilabel, matching
+the built-in trainers. Use a custom implementation if your prediction rule
+differs. Preserve ECG's exact-match accuracy; its per-diagnosis confusion
+matrices are additional diagnostics.
+
+The runtime adds `client_id`, `run_id`, `model_version`, and `time`, then writes
+`client_<id>_confusion.json` atomically. It marks the run completed only after
+the final checkpoint and confusion artifact have been saved. Evaluation and
+write errors fail the run, following the existing error handling.
+
 ## Runtime lifecycle and invariants
 
 For each client, the runtime:
