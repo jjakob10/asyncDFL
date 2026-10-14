@@ -75,7 +75,7 @@ def test_summary_excludes_disconnected_controls_from_average(
     assert csv_path.is_file()
     assert "0.800000" in markdown_path.read_text(encoding="utf-8")
     assert len(charts) == 6
-    assert (tmp_path / "combined_test_accuracy_time.csv").is_file()
+    assert (tmp_path / "combined_test_accuracy_round.csv").is_file()
 
 
 def test_collection_summary_groups_experiment_runs(tmp_path: Path) -> None:

@@ -18,6 +18,7 @@ import numpy as np
 
 matplotlib.use("Agg")
 from matplotlib import pyplot as plt
+from matplotlib.ticker import MaxNLocator
 
 
 CLIENT_FILE_PATTERN = re.compile(r"client_(\d+)_metrics\.jsonl$")
@@ -36,6 +37,7 @@ class MetricRecord:
     values: dict[str, dict[str, float]]
     run_id: str | None = None
     started_at: datetime | None = None
+    round_number: int | None = None
 
 
 @dataclass(frozen=True)
@@ -144,6 +146,10 @@ def load_metrics_file(path: Path, expected_client_id: int) -> list[MetricRecord]
                     time=timestamp,
                     values=values,
                     run_id=raw_record.get("run_id"),
+                    round_number=(
+                        _parse_integer(raw_record["round"], "round", location)
+                        if "round" in raw_record else model_version
+                    ),
                     started_at=(
                         _parse_timestamp(raw_record["started_at"], location)
                         if raw_record.get("started_at") is not None else None
@@ -336,7 +342,7 @@ def plot_metrics(
 
 @dataclass(frozen=True)
 class CombinedSeries:
-    time: np.ndarray
+    rounds: np.ndarray
     mean: np.ndarray
     std: np.ndarray
     participants: np.ndarray
@@ -344,37 +350,31 @@ class CombinedSeries:
 
 
 def build_combined_series(experiment: Experiment, metric: str) -> CombinedSeries:
-    """Interpolate within each client's observed interval on the union grid."""
-    records = [r for items in experiment.clients.values() for r in items]
-    starts = [r.started_at for r in records if r.started_at is not None]
-    if any(r.started_at is None for r in records):
-        print(f"warning: {experiment.label}: missing started_at; using the "
-              "first available timestamp as a fallback", file=sys.stderr)
-        starts.append(min(r.time for r in records))
-    origin = min(starts)
+    """Aggregate only observations recorded at the same round."""
     points = {}
     for client_id, items in sorted(experiment.clients.items()):
-        # Choose the highest version, then the last line, before selecting metrics.
-        deduplicated: dict[datetime, MetricRecord] = {}
+        deduplicated: dict[int, MetricRecord] = {}
         for record in items:
-            previous = deduplicated.get(record.time)
+            round_number = (record.round_number if record.round_number is not None
+                            else record.model_version)
+            previous = deduplicated.get(round_number)
             if previous is None or record.model_version >= previous.model_version:
-                deduplicated[record.time] = record
-        usable = [r for _, r in sorted(deduplicated.items())
-                  if metric in r.values["test"]]
+                deduplicated[round_number] = record
+        usable = [(number, record) for number, record in sorted(deduplicated.items())
+                  if metric in record.values["test"]]
         if not usable:
             print(f"warning: {experiment.label}: client {client_id} has no "
                   f"test.{metric} values", file=sys.stderr)
             continue
         points[client_id] = (
-            np.array([(r.time - origin).total_seconds() for r in usable]),
-            np.array([r.values["test"][metric] for r in usable]),
+            np.array([number for number, _ in usable], dtype=np.int64),
+            np.array([record.values["test"][metric] for _, record in usable]),
         )
-    grid = np.array(sorted({t for x, _ in points.values() for t in x}))
+    grid = np.array(sorted({number for x, _ in points.values() for number in x}),
+                    dtype=np.int64)
     values = np.full((len(points), len(grid)), np.nan)
     for index, (x, y) in enumerate(points.values()):
-        mask = (grid >= x[0]) & (grid <= x[-1])
-        values[index, mask] = np.interp(grid[mask], x, y)
+        values[index, np.searchsorted(grid, x)] = y
     participants = np.sum(np.isfinite(values), axis=0)
     mean = np.full(len(grid), np.nan)
     std = np.full(len(grid), np.nan)
@@ -400,46 +400,31 @@ def plot_combined_metrics(
         if not series.points:
             continue
         figure, axis = plt.subplots(figsize=(10, 6))
-        # Break the drawn curve across intervals with no contributing client.
-        plot_time, plot_mean, plot_std = [], [], []
-        for i, instant in enumerate(series.time):
-            if i:
-                middle = (series.time[i - 1] + instant) / 2
-                if not any(x[0] <= middle <= x[-1]
-                           for x, _ in series.points.values()):
-                    plot_time.append(middle)
-                    plot_mean.append(float("nan"))
-                    plot_std.append(float("nan"))
-            plot_time.append(instant)
-            plot_mean.append(series.mean[i])
-            plot_std.append(series.std[i])
-        plot_mean = np.asarray(plot_mean)
-        plot_std = np.asarray(plot_std)
-        axis.plot(plot_time, plot_mean, color="black", marker=".",
+        axis.plot(series.rounds, series.mean, color="black", marker=".",
                   label="Mean", zorder=4)
-        axis.fill_between(plot_time, plot_mean - plot_std,
-                          plot_mean + plot_std, color="gray", alpha=0.25,
-                          label="±1 standard deviation")
+        axis.fill_between(series.rounds, series.mean - series.std,
+                          series.mean + series.std, color="gray", alpha=0.25,
+                          label="\u00b11 standard deviation")
         if show_client_points:
             for client_id, (x, y) in series.points.items():
                 axis.scatter(x, y, color=client_colors[client_id], s=22,
                              alpha=0.75, label=f"Client {client_id}", zorder=3)
         axis.set_title(f"{experiment.label} — test {metric}")
-        axis.set_xlabel("Elapsed time (s)")
-        axis.set_xlim(left=0)
+        axis.set_xlabel("Round")
+        axis.xaxis.set_major_locator(MaxNLocator(integer=True))
         axis.set_ylabel(f"Test {metric}")
         axis.grid(alpha=0.3)
         axis.legend(fontsize="small", ncol=2)
         figure.tight_layout()
-        stem = f"combined_test_{metric}_time"
+        stem = f"combined_test_{metric}_round"
         path = output_dir / f"{stem}.png"
         figure.savefig(path, dpi=150)
         plt.close(figure)
         csv_path = output_dir / f"{stem}.csv"
         with csv_path.open("w", encoding="utf-8", newline="") as stream:
             writer = csv.writer(stream)
-            writer.writerow(["time_seconds", "mean", "std", "participants"])
-            writer.writerows(zip(series.time, series.mean, series.std,
+            writer.writerow(["round", "mean", "std", "participants"])
+            writer.writerows(zip(series.rounds, series.mean, series.std,
                                  series.participants))
         written.extend([path, csv_path])
     return written
@@ -567,7 +552,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--show-client-points", action="store_true",
-        help="overlay original client observations on combined time plots",
+        help="overlay original client observations on combined round plots",
     )
     parser.add_argument(
         "paths",

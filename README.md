@@ -424,22 +424,23 @@ python scripts/plot_metrics.py results/ecg-8 outputs/ecg-8
 Use `--phase train`, `--phase test`, or `--x-axis time` to change the plots.
 
 The plot command also writes two combined test charts for each experiment:
-`combined_test_accuracy_time.png` and `combined_test_loss_time.png`. These
-always use elapsed seconds, independently of the individual chart options.
-Elapsed time starts at the earliest client `started_at`; older results without
-that field fall back to the earliest available observation, with a warning.
+`combined_test_accuracy_round.png` and `combined_test_loss_round.png`. These
+always use integer rounds, independently of the individual chart options.
 
-Each client's test values are linearly interpolated on the union of observation
-timestamps, only within that client's observed interval. The mean gives equal
-weight to each available client, including clients without training data and
-disconnected clients. Shading represents one population standard deviation
-above and below the mean, rather than a confidence interval. Participation can
-change over time: the matching CSV files report `time_seconds`, `mean`, `std`,
-and `participants`. A single participant has zero standard deviation; a client
-with one observation contributes only at that timestamp. No values are
-extrapolated beyond a client's observations. Duplicate timestamps use the
-highest model version, then the last line. Results from different run IDs must
-not be mixed in the same directory.
+Test observations are grouped by their recorded `round` (or `model_version`
+for older results without a round field). The mean gives equal weight to each
+client with a recorded value at that round, including clients without training
+data and disconnected clients. Missing client values are not interpolated or
+carried forward. Shading represents one population standard deviation above
+and below the mean, rather than a confidence interval. Participation can change
+between rounds: the matching CSV files report `round`, `mean`, `std`, and
+`participants`. A single participant has zero standard deviation; a client
+with one observation contributes only at that round. Duplicate client/round
+records use the highest model version, then the last line. Results from
+different run IDs must not be mixed in the same directory.
+
+Previously generated `_time` charts and CSVs are preserved. New combined
+outputs use the `_round` suffix; individual charts still support `--x-axis time`.
 
 Add `--show-client-points` to overlay every original test observation, with a
 distinct color and legend entry per client:
