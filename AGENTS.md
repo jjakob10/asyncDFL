@@ -11,7 +11,7 @@ and their container definitions live under `experiments/<name>/`.
 
 Tests are under `tests/` and mirror these responsibilities. Operational helpers
 live in `scripts/`, container definitions are in `Dockerfile` and
-`compose.yaml`, and generated experiment artifacts belong in the ignored
+`compose.ring.8.yaml`, and generated experiment artifacts belong in the ignored
 `results/` directory. Presentation and research deliverables are stored in
 `outputs/`.
 
@@ -22,12 +22,12 @@ live in `scripts/`, container definitions are in `Dockerfile` and
   dependencies.
 - `python -m pytest` runs the complete quiet pytest suite configured by
   `pytest.ini`.
-- `docker compose -f experiments/mnist/compose.yaml build` builds the CPU-only
+- `docker compose -f experiments/mnist/compose.ring.8.yaml build` builds the CPU-only
   MNIST image; substitute `cifar10` to build that experiment.
-- `docker compose -f experiments/mnist/compose.yaml up -d` starts the
+- `docker compose -f experiments/mnist/compose.ring.8.yaml up -d` starts the
   eight-client ring; use
   `python scripts/wait_for_run.py` to monitor completion.
-- `docker compose -f experiments/mnist/compose.yaml down` removes the experiment
+- `docker compose -f experiments/mnist/compose.ring.8.yaml down` removes the experiment
   containers and network.
 
 Copy an experiment's `.env.example` to `.env` to override rounds, partition

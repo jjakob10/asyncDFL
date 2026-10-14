@@ -59,7 +59,7 @@ class Settings:
     download_data: bool = False
     max_train_samples: int = 0
     max_test_samples: int = 0
-    api_port: int = 8000
+    api_port: int = 9000
     torch_num_threads: int = 1
     experiment_id: str = "custom"
     topology_name: str = "custom"
@@ -81,7 +81,7 @@ class Settings:
         raw_name = os.getenv("CLIENT_NAME", os.getenv("CLIENT_ID", "client-0"))
         client_id = _client_id(os.getenv("CLIENT_ID", raw_name))
         client_count = int(os.getenv("CLIENT_COUNT", "8"))
-        api_port = int(os.getenv("API_PORT", "8000"))
+        api_port = int(os.getenv("API_PORT", "9000"))
 
         explicit_neighbors = os.getenv("NEIGHBORS")
         if explicit_neighbors is not None:
@@ -142,6 +142,8 @@ class Settings:
         return settings
 
     def validate(self) -> None:
+        if not 1 <= self.api_port <= 65535:
+            raise ValueError("API_PORT must be between 1 and 65535")
         if not self.trainer_module:
             raise ValueError("TRAINER_MODULE must not be empty")
         if not 0 <= self.client_id < self.client_count:

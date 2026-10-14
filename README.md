@@ -28,24 +28,26 @@ experiments/
   mnist/
     trainer.py             MNIST model, data, training, and evaluation
     Dockerfile
-    compose.yaml           Eight-client ring
-    compose.4.yaml         Four-client ring
+    compose.ring.8.yaml    Eight-client ring
+    compose.ring.4.yaml    Four-client ring
     compose.star.4.yaml    Four-client star
     compose.star.8.yaml    Eight-client star
+    compose.*.iid.yaml    IID variants of each ring/star size
     .env.example
   cifar10/
     trainer.py             CIFAR-10 model, data, training, and evaluation
     Dockerfile
-    compose.yaml           Eight-client ring
-    compose.4.yaml         Four-client ring
+    compose.ring.8.yaml    Eight-client ring
+    compose.ring.4.yaml    Four-client ring
     compose.star.4.yaml    Four-client star
     compose.star.8.yaml    Eight-client star
+    compose.*.iid.yaml    IID variants of each ring/star size
     .env.example
   ecg/
     trainer.py             ECG model, lazy HDF5 data, training, and evaluation
     Dockerfile
-    compose.yaml           Eight-client ring
-    compose.4.yaml         Four-client ring
+    compose.ring.8.yaml    Eight-client ring
+    compose.ring.4.yaml    Four-client ring
     .env.example
   ton_iot/
     trainer.py             Tabular preprocessing, binary model, and evaluation
@@ -101,15 +103,15 @@ these inputs available, containers can run without internet access.
 Build and start MNIST:
 
 ```bash
-docker compose -f experiments/mnist/compose.yaml build
-docker compose -f experiments/mnist/compose.yaml up
+docker compose -f experiments/mnist/compose.ring.8.yaml build
+docker compose -f experiments/mnist/compose.ring.8.yaml up
 ```
 
 Build and start CIFAR-10:
 
 ```bash
-docker compose -f experiments/cifar10/compose.yaml build
-docker compose -f experiments/cifar10/compose.yaml up
+docker compose -f experiments/cifar10/compose.ring.8.yaml build
+docker compose -f experiments/cifar10/compose.ring.8.yaml up
 ```
 
 Choose one standalone configuration from this matrix. Each file defines the
@@ -117,14 +119,45 @@ entire experiment; use it directly rather than combining it with another file.
 
 | Dataset | Topology | Nodes | Compose file | Results directory |
 | ------- | -------- | ----: | ------------ | ----------------- |
-| MNIST | Ring | 4 | `experiments/mnist/compose.4.yaml` | `results/mnist-ring-4/` |
-| MNIST | Ring | 8 | `experiments/mnist/compose.yaml` | `results/mnist-ring-8/` |
+| MNIST | Ring | 4 | `experiments/mnist/compose.ring.4.yaml` | `results/mnist-ring-4/` |
+| MNIST | Ring | 8 | `experiments/mnist/compose.ring.8.yaml` | `results/mnist-ring-8/` |
 | MNIST | Star | 4 | `experiments/mnist/compose.star.4.yaml` | `results/mnist-star-4/` |
 | MNIST | Star | 8 | `experiments/mnist/compose.star.8.yaml` | `results/mnist-star-8/` |
-| CIFAR-10 | Ring | 4 | `experiments/cifar10/compose.4.yaml` | `results/cifar10-ring-4/` |
-| CIFAR-10 | Ring | 8 | `experiments/cifar10/compose.yaml` | `results/cifar10-ring-8/` |
+| CIFAR-10 | Ring | 4 | `experiments/cifar10/compose.ring.4.yaml` | `results/cifar10-ring-4/` |
+| CIFAR-10 | Ring | 8 | `experiments/cifar10/compose.ring.8.yaml` | `results/cifar10-ring-8/` |
 | CIFAR-10 | Star | 4 | `experiments/cifar10/compose.star.4.yaml` | `results/cifar10-star-4/` |
 | CIFAR-10 | Star | 8 | `experiments/cifar10/compose.star.8.yaml` | `results/cifar10-star-8/` |
+
+### IID variants
+
+The existing image experiments default to Dirichlet partitioning. These eight
+standalone variants fix `PARTITION_MODE=iid`, even if an environment file sets
+`PARTITION_MODE=dirichlet`. Each reuses its dataset image and adds `-iid` to
+the project name, experiment ID, default run ID, and results directory.
+Training hyperparameters and topologies match their Dirichlet counterparts.
+
+| Dataset | Topology | Nodes | Compose file | Results directory |
+| ------- | -------- | ----: | ------------ | ----------------- |
+| MNIST | Ring | 4 | `experiments/mnist/compose.ring.4.iid.yaml` | `results/mnist-ring-4-iid/` |
+| MNIST | Ring | 8 | `experiments/mnist/compose.ring.8.iid.yaml` | `results/mnist-ring-8-iid/` |
+| MNIST | Star | 4 | `experiments/mnist/compose.star.4.iid.yaml` | `results/mnist-star-4-iid/` |
+| MNIST | Star | 8 | `experiments/mnist/compose.star.8.iid.yaml` | `results/mnist-star-8-iid/` |
+| CIFAR-10 | Ring | 4 | `experiments/cifar10/compose.ring.4.iid.yaml` | `results/cifar10-ring-4-iid/` |
+| CIFAR-10 | Ring | 8 | `experiments/cifar10/compose.ring.8.iid.yaml` | `results/cifar10-ring-8-iid/` |
+| CIFAR-10 | Star | 4 | `experiments/cifar10/compose.star.4.iid.yaml` | `results/cifar10-star-4-iid/` |
+| CIFAR-10 | Star | 8 | `experiments/cifar10/compose.star.8.iid.yaml` | `results/cifar10-star-8-iid/` |
+
+For example:
+
+```bash
+docker compose -f experiments/mnist/compose.ring.4.iid.yaml up --build -d
+python scripts/wait_for_run.py --client-count 4
+docker compose -f experiments/mnist/compose.ring.4.iid.yaml down
+```
+
+All Compose stacks keep published ports `8000`, `8001`, and so on, mapping
+to internal port `9000`. Local monitoring therefore still starts at 8000.
+Run stacks sequentially when they use the same published host ports.
 
 Every node receives a disjoint training partition and trains, including the
 star center (`client-0`). Ring nodes exchange models with their two adjacent
@@ -149,15 +182,15 @@ ECG uses an external preprocessed FedCVD data tree. Build and start the
 eight-client ring:
 
 ```bash
-docker compose -f experiments/ecg/compose.yaml build
-docker compose -f experiments/ecg/compose.yaml up
+docker compose -f experiments/ecg/compose.ring.8.yaml build
+docker compose -f experiments/ecg/compose.ring.8.yaml up
 ```
 
 Or run the four-client ring with the same `dfl-ecg:latest` image:
 
 ```bash
-docker compose -f experiments/ecg/compose.4.yaml build
-docker compose -f experiments/ecg/compose.4.yaml up
+docker compose -f experiments/ecg/compose.ring.4.yaml build
+docker compose -f experiments/ecg/compose.ring.4.yaml up
 ```
 
 Only run one stack at a time because their published host-port ranges overlap.
@@ -193,10 +226,10 @@ configured client count automatically.
 Stop the selected stack with:
 
 ```bash
-docker compose -f experiments/mnist/compose.yaml down
-docker compose -f experiments/cifar10/compose.yaml down
-docker compose -f experiments/ecg/compose.yaml down
-docker compose -f experiments/ecg/compose.4.yaml down
+docker compose -f experiments/mnist/compose.ring.8.yaml down
+docker compose -f experiments/cifar10/compose.ring.8.yaml down
+docker compose -f experiments/ecg/compose.ring.8.yaml down
+docker compose -f experiments/ecg/compose.ring.4.yaml down
 ```
 
 Per-round JSONL files and final PyTorch state dictionaries are written to the
@@ -209,14 +242,15 @@ Copy the appropriate example and edit it:
 ```bash
 cp experiments/mnist/.env.example experiments/mnist/.env
 docker compose --env-file experiments/mnist/.env \
-  -f experiments/mnist/compose.yaml up
+  -f experiments/mnist/compose.ring.8.yaml up
 ```
 
-The same dataset `.env` works with all four of its topology files. The MNIST
-and CIFAR-10 Compose defaults are `PARTITION_MODE=dirichlet`,
+The same dataset `.env` works with all eight of its topology/partition files.
+The MNIST and CIFAR-10 variants without `.iid` default to `PARTITION_MODE=dirichlet`,
 `DIRICHLET_ALPHA=0.5`, `MIN_PARTITION_SIZE=100`, and `SEED=42`.
 Set these in `.env` or change their defaults in the selected Compose file.
-Use `PARTITION_MODE=iid` to select uniform random splitting instead.
+Use `PARTITION_MODE=iid` to select uniform random splitting instead, or select
+a `.iid.yaml` variant to keep IID fixed regardless of the environment file.
 
 Dirichlet draws a distribution across clients independently for each class.
 Smaller positive alpha values generally produce more concentrated class
@@ -318,7 +352,7 @@ For example:
 
 ```bash
 docker compose --env-file experiments/ecg/.env \
-  -f experiments/ecg/compose.4.yaml up
+  -f experiments/ecg/compose.ring.4.yaml up
 ```
 
 The most useful settings are:
@@ -342,10 +376,12 @@ The most useful settings are:
 | `MAX_TRAIN_SAMPLES`  |           `0` | Optional global training cap           |
 | `MAX_TEST_SAMPLES`   |           `0` | Optional test cap                      |
 | `TORCH_NUM_THREADS`  |           `1` | CPU threads per client                 |
+| `API_PORT`          |        `9000` | Internal API and derived neighbor port |
 
 These are application defaults. The standalone MNIST/CIFAR-10 Compose files
-override partition mode to `dirichlet`, and set identity and topology metadata
-for the selected experiment. The paper catalog keeps its existing defaults.
+default to `dirichlet`, except the `.iid.yaml` variants, which fix `iid`.
+They also set identity and topology metadata for the selected experiment.
+The paper catalog keeps its existing defaults.
 
 `NEIGHBORS` may explicitly list comma-separated URLs. If omitted, clients
 derive ring neighbors from `CLIENT_ID`, `CLIENT_COUNT`, `GNS3_IP_PREFIX`, and
@@ -554,21 +590,37 @@ docker build -f experiments/cifar10/Dockerfile -t dfl-cifar10:latest .
 docker build -f experiments/ecg/Dockerfile -t dfl-ecg:latest .
 ```
 
-If GNS3 uses another Docker engine, transfer the selected image with
-`docker save` and `docker load`. Create one reusable Docker template using the
-image, one adapter, port 8000, `/results` as a persistent volume, and:
+If GNS3 uses another Docker engine, transfer the rebuilt image with
+`docker save` and `docker load`. Create a Docker template with one adapter
+and `/results` as a persistent volume. The API listens on **9000** inside
+every experiment container, avoiding the existing GNS3 service on port 8000.
+Keep the image startup command; remove old template overrides that launch an
+interactive shell or start Uvicorn on port 8000. The image uses:
+
+```dockerfile
+ENV API_PORT=9000
+EXPOSE 9000
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port \"$API_PORT\""]
+```
+
+The shell expands `API_PORT` and `exec` makes Uvicorn the main process so it
+receives shutdown signals. Image and Compose healthchecks read the same
+variable. If starting Uvicorn manually, pass `--host 0.0.0.0 --port 9000`;
+`API_PORT` alone does not change a manually supplied Uvicorn command.
+
+For the existing four-client GNS3 ring, configure:
 
 ```dotenv
 CLIENT_NAME=%vm-name%
 TRAINER_MODULE=experiments.mnist.trainer
-CLIENT_COUNT=8
-HEAD_CLIENT_IDS=7
-RUN_ID=gns3-ring
+CLIENT_COUNT=4
+HEAD_CLIENT_IDS=3
+API_PORT=9000
+RUN_ID=gns3-ring-4-iid
 ROUNDS=10
 LOCAL_EPOCHS=1
 BATCH_SIZE=64
 PARTITION_MODE=iid
-DIRICHLET_ALPHA=0.5
 SEED=42
 GNS3_IP_PREFIX=10.10.0.
 GNS3_IP_OFFSET=10
@@ -576,10 +628,38 @@ HEAD_START_DELAY=5
 TORCH_NUM_THREADS=1
 ```
 
-Use `experiments.cifar10.trainer` with the CIFAR-10 image. Name the nodes
-`client-0` through `client-7`, attach them to the same Ethernet segment, and
-assign `10.10.0.10/24` through `10.10.0.17/24`. The derived neighbor URLs
-enforce the logical ring. Start clients 0 through 6 before client 7.
+Verify that each node receives its actual name as `CLIENT_NAME` (`client-0`
+through `client-3`); set it individually if the template does not expand
+`%vm-name%`. Alternatively, set `CLIENT_ID` explicitly per node. Remove any
+stale `CLIENT_ID` that overrides the node name. Use `HEAD_CLIENT_IDS` (plural);
+the old `HEAD_CLIENT_ID` is no longer read.
+
+Assign `10.10.0.10/24` through `10.10.0.13/24` to the corresponding node
+interfaces and attach them to the same Ethernet segment. The prefix/offset
+variables only construct neighbor URLs; they do not configure interfaces.
+Leave `NEIGHBORS` **absent**, not empty: `NEIGHBORS=""` means an isolated
+client. Client 0 then contacts `http://10.10.0.13:9000` and
+`http://10.10.0.11:9000`. Start clients 0 through 2, verify their `/health`
+endpoints, and then start client 3, which initiates the shared run.
+
+For CIFAR-10 use the CIFAR-10 image and
+`TRAINER_MODULE=experiments.cifar10.trainer`. For eight-client rings use
+`CLIENT_COUNT=8`, `HEAD_CLIENT_IDS=7`, names `client-0` through `client-7`,
+and IPs `10.10.0.10/24` through `10.10.0.17/24`; start client 7 last.
+
+For stars use `HEAD_CLIENT_IDS=0` and explicit per-node `NEIGHBORS` URLs:
+the center (`client-0`, IP `10.10.0.10`) lists all leaves, and every leaf
+lists only `http://10.10.0.10:9000`. For four nodes the center uses
+`http://10.10.0.11:9000,http://10.10.0.12:9000,http://10.10.0.13:9000`;
+for eight, extend that list through `10.10.0.17:9000`. Start the leaves
+before the center. Set `CLIENT_COUNT` and a shared `RUN_ID` for the selected
+scenario. Persist `/results` separately for each experiment.
+
+After migrating, rebuild the images, transfer them to the GNS3 Docker engine,
+and recreate nodes using the updated image/template. Verify IP reachability,
+`http://<node-ip>:9000/health`, start propagation, and completion on `/status`
+with one round and capped samples before a full run. Compose service names
+and published host ports are not substitutes for these GNS3 node IPs.
 
 For ECG, use `dfl-ecg:latest`,
 `TRAINER_MODULE=experiments.ecg.trainer`, and mount the host FedCVD data
@@ -594,10 +674,10 @@ does not embed the approximately 9.35 GB dataset.
 python -m pip install -r requirements-dev.txt
 python -m compileall -q app experiments tests scripts
 python -m pytest
-docker compose -f experiments/mnist/compose.yaml config --quiet
-docker compose -f experiments/cifar10/compose.yaml config --quiet
-docker compose -f experiments/ecg/compose.yaml config --quiet
-docker compose -f experiments/ecg/compose.4.yaml config --quiet
+docker compose -f experiments/mnist/compose.ring.8.yaml config --quiet
+docker compose -f experiments/cifar10/compose.ring.8.yaml config --quiet
+docker compose -f experiments/ecg/compose.ring.8.yaml config --quiet
+docker compose -f experiments/ecg/compose.ring.4.yaml config --quiet
 ```
 
 The suite covers trainer discovery and validation, model smoke training,
@@ -614,3 +694,26 @@ separate maintenance environment.
 This baseline assumes a trusted isolated experiment network. Model files and
 start messages use plaintext HTTP without authentication. Do not deserialize
 models from untrusted nodes.
+
+## Migration of Compose filenames and API port
+
+For MNIST, CIFAR-10, and ECG, `compose.yaml` is now
+`compose.ring.8.yaml`, and `compose.4.yaml` is now `compose.ring.4.yaml`.
+The old filenames are removed. Star filenames are unchanged. Update local
+commands and automation references accordingly. Stop existing stacks using
+their previous configuration before rebuilding/recreating them; retain the
+existing results directories. Existing project identities remain unchanged.
+
+The internal API port is now 9000 for MNIST, CIFAR-10, ECG, TON-IoT, and
+generated paper experiments. Published host ports remain unchanged. Rebuild
+images and recreate containers using the new Compose files, for example:
+
+```bash
+docker compose -f experiments/mnist/compose.ring.8.yaml up --build -d
+```
+
+For capped IID smoke tests, use a separate environment file with `ROUNDS=1`,
+`MAX_TRAIN_SAMPLES=400`, `MAX_TEST_SAMPLES=40` and invoke Compose with
+`--env-file <smoke.env>` for each dataset's four-client IID ring. Monitor with
+`python scripts/wait_for_run.py --client-count 4`, inspect logs and health,
+and stop each stack before starting the next dataset.

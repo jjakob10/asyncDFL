@@ -30,6 +30,14 @@ def test_render_compose_contains_resolved_heads_and_components(
     assert environment["RUN_ID"] == "paper-run"
     assert environment["COMPONENT_SIZE"] == "1"
     assert environment["ROUNDS"] == "1"
+    for client_id, client in enumerate(experiment.clients):
+        service = compose["services"][f"client-{client_id}"]
+        assert service["environment"]["API_PORT"] == "9000"
+        assert service["ports"] == [f"{8000 + client_id}:9000"]
+        assert service["environment"]["NEIGHBORS"] == ",".join(
+            f"http://client-{neighbor}:9000" for neighbor in client.neighbors
+        )
+        assert "os.environ['API_PORT']" in service["healthcheck"]["test"][3]
     assert (run_directory / "resolved_experiment.json").is_file()
 
 

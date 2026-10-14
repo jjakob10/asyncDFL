@@ -57,10 +57,11 @@ def _service_environment(
 ) -> dict[str, str]:
     client = experiment.clients[client_id]
     neighbors = ",".join(
-        f"http://client-{neighbor}:8000" for neighbor in client.neighbors
+        f"http://client-{neighbor}:9000" for neighbor in client.neighbors
     )
     environment = {
         "TRAINER_MODULE": experiment.trainer_module,
+        "API_PORT": "9000",
         "CLIENT_COUNT": str(experiment.client_count),
         "CLIENT_ID": str(client_id),
         "CLIENT_NAME": f"client-{client_id}",
@@ -129,7 +130,7 @@ def render_compose(
             "image": image_name,
             "pull_policy": "never",
             "restart": "no",
-            "ports": [f"{8000 + client.client_id}:8000"],
+            "ports": [f"{8000 + client.client_id}:9000"],
             "environment": _service_environment(
                 experiment,
                 client.client_id,
@@ -145,9 +146,10 @@ def render_compose(
                     "python",
                     "-c",
                     (
-                        "import urllib.request; "
+                        "import os, urllib.request; "
                         "urllib.request.urlopen("
-                        "'http://127.0.0.1:8000/health', timeout=2)"
+                        "'http://127.0.0.1:' + os.environ['API_PORT'] "
+                        "+ '/health', timeout=2)"
                     ),
                 ],
                 "interval": "5s",

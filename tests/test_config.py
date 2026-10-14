@@ -5,6 +5,35 @@ import pytest
 from app.config import Settings
 
 
+@pytest.mark.parametrize("port", [None, "9100"])
+def test_gns3_ring_uses_configured_port(monkeypatch, port) -> None:
+    monkeypatch.setenv("CLIENT_COUNT", "4")
+    monkeypatch.setenv("HEAD_CLIENT_IDS", "3")
+    monkeypatch.setenv("GNS3_IP_PREFIX", "10.10.0.")
+    monkeypatch.setenv("GNS3_IP_OFFSET", "10")
+    monkeypatch.delenv("NEIGHBORS", raising=False)
+    monkeypatch.delenv("API_PORT", raising=False)
+    if port is not None:
+        monkeypatch.setenv("API_PORT", port)
+    expected_port = int(port or "9000")
+    for client_id in range(4):
+        monkeypatch.setenv("CLIENT_ID", str(client_id))
+        settings = Settings.from_env()
+        assert settings.api_port == expected_port
+        assert settings.neighbors == (
+            f"http://10.10.0.{10 + (client_id - 1) % 4}:{expected_port}",
+            f"http://10.10.0.{10 + (client_id + 1) % 4}:{expected_port}",
+        )
+        assert settings.is_head == (client_id == 3)
+
+
+@pytest.mark.parametrize("port", ["0", "-1", "65536", "invalid"])
+def test_settings_reject_invalid_api_port(monkeypatch, port) -> None:
+    monkeypatch.setenv("API_PORT", port)
+    with pytest.raises(ValueError):
+        Settings.from_env()
+
+
 def test_settings_parse_plural_heads_and_shared_run_id(monkeypatch) -> None:
     monkeypatch.setenv("CLIENT_ID", "client-8")
     monkeypatch.setenv("CLIENT_COUNT", "10")

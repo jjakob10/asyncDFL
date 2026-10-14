@@ -1,5 +1,6 @@
 x-common-environment: &common-environment
   TRAINER_MODULE: "${TRAINER_MODULE:-experiments.ecg.trainer}"
+  API_PORT: "9000"
   CLIENT_COUNT: "8"
   HEAD_CLIENT_IDS: "7"
   RUN_ID: "${RUN_ID:-ecg-8-ring}"
@@ -33,7 +34,7 @@ x-client: &client
       - CMD
       - python
       - -c
-      - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"
+      - "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.environ['API_PORT'] + '/health', timeout=2)"
     interval: 5s
     timeout: 3s
     start_period: 20s
@@ -46,77 +47,77 @@ services:
       context: ../..
       dockerfile: experiments/ecg/Dockerfile
     ports:
-      - "8000:8000"
+      - "8000:9000"
     environment:
       <<: *common-environment
       CLIENT_ID: "0"
       CLIENT_NAME: "client-0"
-      NEIGHBORS: "http://client-7:8000,http://client-1:8000"
+      NEIGHBORS: "http://client-7:9000,http://client-1:9000"
 
   client-1:
     <<: *client
     ports:
-      - "8001:8000"
+      - "8001:9000"
     environment:
       <<: *common-environment
       CLIENT_ID: "1"
       CLIENT_NAME: "client-1"
-      NEIGHBORS: "http://client-0:8000,http://client-2:8000"
+      NEIGHBORS: "http://client-0:9000,http://client-2:9000"
 
   client-2:
     <<: *client
     ports:
-      - "8002:8000"
+      - "8002:9000"
     environment:
       <<: *common-environment
       CLIENT_ID: "2"
       CLIENT_NAME: "client-2"
-      NEIGHBORS: "http://client-1:8000,http://client-3:8000"
+      NEIGHBORS: "http://client-1:9000,http://client-3:9000"
 
   client-3:
     <<: *client
     ports:
-      - "8003:8000"
+      - "8003:9000"
     environment:
       <<: *common-environment
       CLIENT_ID: "3"
       CLIENT_NAME: "client-3"
-      NEIGHBORS: "http://client-2:8000,http://client-4:8000"
+      NEIGHBORS: "http://client-2:9000,http://client-4:9000"
 
   client-4:
     <<: *client
     ports:
-      - "8004:8000"
+      - "8004:9000"
     environment:
       <<: *common-environment
       CLIENT_ID: "4"
       CLIENT_NAME: "client-4"
-      NEIGHBORS: "http://client-3:8000,http://client-5:8000"
+      NEIGHBORS: "http://client-3:9000,http://client-5:9000"
 
   client-5:
     <<: *client
     ports:
-      - "8005:8000"
+      - "8005:9000"
     environment:
       <<: *common-environment
       CLIENT_ID: "5"
       CLIENT_NAME: "client-5"
-      NEIGHBORS: "http://client-4:8000,http://client-6:8000"
+      NEIGHBORS: "http://client-4:9000,http://client-6:9000"
 
   client-6:
     <<: *client
     ports:
-      - "8006:8000"
+      - "8006:9000"
     environment:
       <<: *common-environment
       CLIENT_ID: "6"
       CLIENT_NAME: "client-6"
-      NEIGHBORS: "http://client-5:8000,http://client-7:8000"
+      NEIGHBORS: "http://client-5:9000,http://client-7:9000"
 
   client-7:
     <<: *client
     ports:
-      - "8007:8000"
+      - "8007:9000"
     depends_on:
       client-0:
         condition: service_healthy
@@ -136,4 +137,4 @@ services:
       <<: *common-environment
       CLIENT_ID: "7"
       CLIENT_NAME: "client-7"
-      NEIGHBORS: "http://client-6:8000,http://client-0:8000"
+      NEIGHBORS: "http://client-6:9000,http://client-0:9000"

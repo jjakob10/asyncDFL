@@ -298,7 +298,7 @@ def architecture_diagram() -> Canvas:
     c.text(
         665,
         103,
-        "FastAPI on :8000\nJSON control/status\nBinary model payload\n202 / 409 idempotency\nLifespan creates runtime",
+        "FastAPI on :9000\nJSON control/status\nBinary model payload\n202 / 409 idempotency\nLifespan creates runtime",
         "#343a40",
         size=28,
     )
@@ -420,7 +420,7 @@ def deployment_diagram() -> Canvas:
     c.text(
         104,
         249,
-        "NEIGHBORS:\nhttp://client-2:8000\nhttp://client-4:8000\nlocal partition + own model",
+        "NEIGHBORS:\nhttp://client-2:9000\nhttp://client-4:9000\nlocal partition + own model",
         "#343a40",
         size=26,
     )
@@ -441,7 +441,7 @@ def deployment_diagram() -> Canvas:
         fill = orange_fill if is_head else blue_fill
         c.ellipse(x, y, w, h, stroke, fill, stroke_width=4)
         c.text(x + 45, y + 35, name, stroke, size=34)
-        c.text(x + 60, y + 102, "HEAD" if is_head else ":8000", orange if is_head else "#495057", size=26)
+        c.text(x + 60, y + 102, "HEAD" if is_head else ":9000", orange if is_head else "#495057", size=26)
 
     c.ellipse(938, 431, 420, 320, gray, "#ffffff", stroke_width=3, stroke_style="dashed")
     c.text(987, 499, "Logical ring", "#495057", size=41)

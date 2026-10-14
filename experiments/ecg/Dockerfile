@@ -9,6 +9,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     OMP_NUM_THREADS=1 \
     TRAINER_MODULE=experiments.ecg.trainer
 
+ENV API_PORT=9000
+
 WORKDIR /opt/dfl
 
 RUN apt-get update \
@@ -24,10 +26,10 @@ COPY experiments/ecg ./experiments/ecg
 
 RUN mkdir -p /data /results
 
-EXPOSE 8000
+EXPOSE 9000
 VOLUME ["/data", "/results"]
 
 HEALTHCHECK --interval=10s --timeout=3s --start-period=30s --retries=6 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"
+    CMD python -c "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.environ['API_PORT'] + '/health', timeout=2)"
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port \"$API_PORT\""]
