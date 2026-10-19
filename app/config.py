@@ -1,8 +1,30 @@
 from __future__ import annotations
 
+import json
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+
+def parse_client_classes(value: object, client_count: int) -> dict[int, tuple[int, ...]]:
+    """Validate a JSON class assignment without silently coercing labels."""
+    if not isinstance(value, dict):
+        raise ValueError("CLIENT_CLASSES must be a JSON object")
+    result = {}
+    for key, classes in value.items():
+        if isinstance(key, bool) or not str(key).isdigit():
+            raise ValueError("CLIENT_CLASSES keys must be client IDs")
+        client_id = int(key)
+        if not 0 <= client_id < client_count or client_id in result:
+            raise ValueError("CLIENT_CLASSES contains an invalid or duplicate client ID")
+        if not isinstance(classes, (list, tuple)) or any(
+            type(label) is not int or label < 0 for label in classes
+        ):
+            raise ValueError("CLIENT_CLASSES values must be lists of nonnegative integers")
+        if len(set(classes)) != len(classes):
+            raise ValueError("CLIENT_CLASSES must not contain duplicate classes")
+        result[client_id] = tuple(classes)
+    return result
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -67,6 +89,7 @@ class Settings:
     component_size: int = 1
     paper_role: str = "R"
     ton_iot_path: str = ""
+    client_classes: dict[int, tuple[int, ...]] = field(default_factory=dict)
 
     @property
     def is_head(self) -> bool:
@@ -137,6 +160,9 @@ class Settings:
             component_size=int(os.getenv("COMPONENT_SIZE", "1")),
             paper_role=os.getenv("PAPER_ROLE", "R").strip().upper(),
             ton_iot_path=os.getenv("TON_IOT_PATH", "").strip(),
+            client_classes=parse_client_classes(
+                json.loads(os.getenv("CLIENT_CLASSES", "{}")), client_count
+            ),
         )
         settings.validate()
         return settings
@@ -164,8 +190,15 @@ class Settings:
             raise ValueError("PAPER_ROLE must be one of R, D, E, or ED")
         if self.component_size < 1:
             raise ValueError("COMPONENT_SIZE must be positive")
-        if self.partition_mode not in {"iid", "dirichlet"}:
-            raise ValueError("PARTITION_MODE must be 'iid' or 'dirichlet'")
+        if self.partition_mode not in {"iid", "dirichlet", "manual"}:
+            raise ValueError("PARTITION_MODE must be 'iid', 'dirichlet', or 'manual'")
+        mapping = parse_client_classes(self.client_classes, self.client_count)
+        if self.partition_mode == "manual":
+            if set(mapping) != set(range(self.client_count)):
+                raise ValueError("CLIENT_CLASSES must specify every client in manual mode")
+            for client_id, classes in mapping.items():
+                if bool(classes) == (client_id in self.empty_client_ids):
+                    raise ValueError("CLIENT_CLASSES must be empty only for empty clients")
         if self.rounds < 1 or self.local_epochs < 1 or self.batch_size < 1:
             raise ValueError("rounds, local_epochs, and batch_size must be positive")
         if self.dirichlet_alpha <= 0:

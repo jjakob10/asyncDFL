@@ -85,8 +85,8 @@ def evaluate(state, test_loader) -> dict: ...
 
 The client validates the module at startup. The runtime has no dataset or model
 imports and delegates model creation, data loading, local training, and
-evaluation to the selected trainer. Shared deterministic seeding and IID or
-Dirichlet partition generation are available from `app.training`.
+evaluation to the selected trainer. Shared deterministic seeding and IID, Dirichlet, or manual class-based
+partition generation are available from `app.training`.
 
 To add an experiment, create a new importable directory under `experiments/`,
 implement the trainer interface, and copy one of the existing Dockerfile and
@@ -505,6 +505,121 @@ and `summarize`; each command accepts `--show-client-points`. For example:
 
 ```bash
 python scripts/run_paper_experiments.py summarize results/paper --show-client-points
+```
+
+## Thiago experiments: six-client rings and stars
+
+`experiments/thiago/mnist/manifest.json` and
+`experiments/thiago/cifar10/manifest.json` each define six experiments: two
+topologies (ring and star) crossed with IID, Dirichlet, and manual non-IID
+partitioning. All six clients train, including the star center, client 0.
+The manifests reuse the existing dataset trainers and Dockerfiles. Defaults
+are 10 rounds, one local epoch, batch size 64, learning rate 0.01, momentum
+0.9, seed 42, Dirichlet alpha 0.5, and requested minimum partition size 100.
+The existing effective-minimum adjustment also applies to capped runs.
+
+The manual scenarios use the same assignment for both datasets and topologies:
+
+| Client | Training classes |
+| --- | --- |
+| 0, 2, 3, 5 | 2, 5, 6, 7, 8, 9 |
+| 1 | 0, 1, 2, 5, 6, 7, 8, 9 |
+| 4 | 3, 4 |
+
+Clients 1 and 4 are not adjacent in either topology. Only client 1 owns classes
+0/1, and only client 4 owns classes 3/4. Client 1 also has all six shared
+classes; client 4 has only its two exclusive classes. These restrictions come
+entirely from the manifest's `client_classes` mapping, not from the algorithm.
+Class IDs for CIFAR-10 follow torchvision's order: airplane, automobile, bird,
+cat, deer, dog, frog, horse, ship, truck.
+
+List the MNIST scenarios or generate a Compose file without starting containers:
+
+```bash
+python scripts/run_paper_experiments.py list --manifest experiments/thiago/mnist/manifest.json
+python scripts/run_paper_experiments.py render-compose thiago-mnist-ring-6-manual --manifest experiments/thiago/mnist/manifest.json --run-id example
+```
+
+Run the manual MNIST example as a capped smoke test (one round/epoch,
+400 training samples and 200 test samples), or run the full scenario:
+
+```bash
+python scripts/run_paper_experiments.py smoke thiago-mnist-ring-6-manual --manifest experiments/thiago/mnist/manifest.json --run-id smoke-1
+python scripts/run_paper_experiments.py run thiago-mnist-ring-6-manual --manifest experiments/thiago/mnist/manifest.json --run-id full-1
+```
+
+Run all six scenarios for each dataset sequentially:
+
+```bash
+python scripts/run_paper_experiments.py run --all --manifest experiments/thiago/mnist/manifest.json
+python scripts/run_paper_experiments.py run --all --manifest experiments/thiago/cifar10/manifest.json
+```
+
+Each manifest specifies `results_root`, resolved relative to the repository.
+Outputs go to `results/thiago/<dataset>/<experiment-id>/<run-id>/`; generated
+Compose files go to its `.generated/` directory. Override with `--results-root`.
+Each run writes its resolved configuration including the partition parameters.
+The runner still uses the original 158-entry paper manifest when `--manifest`
+is omitted. The new explicit manifest format merges `defaults`, dataset
+configuration, and individual `experiments` entries, in that order. Each entry
+specifies `experiment_id`, `dataset`, `topology_name` (`ring` or `star`), and
+`partition_mode`; manual entries also specify `client_classes`.
+
+### Manual non-IID configuration
+
+For MNIST, CIFAR-10, and TON_IOT, select `PARTITION_MODE=manual` and supply
+`CLIENT_CLASSES` as a JSON object with every client ID mapped to its class IDs.
+For example, these settings reproduce the MNIST six-client assignment above:
+
+```dotenv
+TRAINER_MODULE=experiments.mnist.trainer
+CLIENT_COUNT=6
+HEAD_CLIENT_IDS=5
+PARTITION_MODE=manual
+CLIENT_CLASSES='{"0":[2,5,6,7,8,9],"1":[0,1,2,5,6,7,8,9],"2":[2,5,6,7,8,9],"3":[2,5,6,7,8,9],"4":[3,4],"5":[2,5,6,7,8,9]}'
+```
+
+The runner forwards `client_classes` from the manifest automatically. For direct
+Compose usage, ensure the service environment includes `CLIENT_CLASSES`; the
+existing standalone Compose files do not forward this new variable automatically.
+
+For each class, the algorithm shuffles the available training indices with the
+seed and splits them evenly between the clients listing that class. Per-class
+counts differ by at most one; total client sizes can differ. Every sample is
+assigned exactly once. All available classes must be assigned, and every
+requested class must exist after the global training sample cap. There must be
+at least one sample of each requested class per assigned client, and each
+nonempty client's partition must meet the effective minimum. Invalid mappings
+or impossible sample caps fail with an error rather than dropping classes or
+relaxing restrictions. Clients in `EMPTY_CLIENT_IDS` must have empty lists;
+other clients must have nonempty lists. ECG rejects manual mode because its
+targets contain multiple diagnoses per sample.
+
+### Training distribution and contributing neighbors
+
+New runs write `client_<id>_class_distribution.json` before training starts.
+The file contains the client/run identity, class labels, local training counts,
+and sample total after caps and partitioning. The plot script automatically
+produces `class_distribution.png`: rows are clients, columns are classes, and
+each cell shows an absolute sample count. Empty clients have zero counts.
+For ECG, cells count positive diagnoses; a sample may contribute to multiple
+columns, so row sums need not equal the sample total. The runner also creates
+this heatmap during `run`, `smoke`, and `summarize`. Older results without these
+files still produce the other charts and emit a warning.
+
+The optional `--show-neighbor-count` adds a dotted line with square markers to
+each individual chart containing test accuracy. The right axis shows the number
+of neighbor models actually included in that round's evaluated aggregate,
+excluding the client's own model. Failed fetches are excluded. Counts come from
+`neighbor_versions`, or `participants - 1` in older logs. Missing observations
+are omitted with a warning. The line uses the same model-version or elapsed-time
+axis as accuracy, and is disabled by default. Train-only plots do not show it.
+
+For example, after the full manual MNIST run:
+
+```bash
+python scripts/plot_metrics.py --show-neighbor-count results/thiago/mnist/thiago-mnist-ring-6-manual/full-1 outputs/thiago-mnist-ring-manual
+python scripts/run_paper_experiments.py summarize results/thiago/mnist
 ```
 
 ## Reproduce the GLow paper experiments

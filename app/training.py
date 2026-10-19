@@ -11,7 +11,7 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
-from app.config import Settings
+from app.config import Settings, parse_client_classes
 from app.federation import StateDict
 
 
@@ -20,6 +20,24 @@ class DataBundle:
     train_loader: DataLoader | None
     test_loader: DataLoader
     sample_count: int
+    class_distribution: dict[str, Any] | None = None
+
+
+def class_distribution(
+    labels: np.ndarray, class_names: list[str], multilabel: bool = False,
+) -> dict[str, Any]:
+    """Describe local training targets without loading input samples."""
+    labels = np.asarray(labels)
+    if multilabel:
+        counts = labels.sum(axis=0).astype(np.int64)
+    else:
+        counts = np.bincount(labels.astype(np.int64), minlength=len(class_names))
+    return {
+        "classification_type": "multilabel" if multilabel else "multiclass",
+        "labels": class_names,
+        "counts": counts.tolist(),
+        "sample_count": len(labels),
+    }
 
 
 class Trainer(Protocol):
@@ -89,6 +107,7 @@ def make_partitions(
     min_size: int = 100,
     max_attempts: int = 1_000,
     empty_client_ids: tuple[int, ...] = (),
+    client_classes: dict[int, tuple[int, ...]] | None = None,
 ) -> list[np.ndarray]:
     labels = np.asarray(labels, dtype=np.int64)
     if client_count < 1:
@@ -102,6 +121,30 @@ def make_partitions(
     data_client_count = len(data_client_ids)
     if labels.size < data_client_count * min_size:
         raise ValueError("dataset is too small for the requested minimum partition size")
+
+    if mode == "manual":
+        mapping = parse_client_classes(client_classes, client_count)
+        if set(mapping) != set(range(client_count)):
+            raise ValueError("CLIENT_CLASSES must specify every client")
+        for client_id, classes in mapping.items():
+            if bool(classes) == (client_id in empty_ids):
+                raise ValueError("CLIENT_CLASSES must be empty only for empty clients")
+        assigned = {label for classes in mapping.values() for label in classes}
+        if assigned != set(np.unique(labels).tolist()):
+            raise ValueError("CLIENT_CLASSES must cover exactly the available classes")
+        rng = np.random.default_rng(seed)
+        partitions: list[list[int]] = [[] for _ in range(client_count)]
+        for label in sorted(assigned):
+            owners = [item for item in data_client_ids if label in mapping[item]]
+            indices = rng.permutation(np.flatnonzero(labels == label))
+            if len(indices) < len(owners):
+                raise ValueError(f"class {label} has too few samples for its assigned clients")
+            for owner, part in zip(owners, np.array_split(indices, len(owners))):
+                partitions[owner].extend(part.tolist())
+        result = [rng.permutation(values).astype(np.int64) for values in partitions]
+        if any(len(result[item]) < min_size for item in data_client_ids):
+            raise ValueError("manual partition does not meet minimum partition size")
+        return result
 
     if mode == "iid":
         rng = np.random.default_rng(seed)

@@ -220,8 +220,24 @@ class ClientRuntime:
             os.fsync(stream.fileno())
         os.replace(temporary, destination)
 
+    def _save_class_distribution(self) -> None:
+        if self.data.class_distribution is None:
+            return
+        record = dict(self.data.class_distribution)
+        record.update({"client_id": self.settings.client_id, "run_id": self._run_id})
+        destination = Path(self.settings.results_dir) / (
+            f"client_{self.settings.client_id}_class_distribution.json"
+        )
+        temporary = destination.with_suffix(".tmp")
+        with temporary.open("w", encoding="utf-8") as stream:
+            json.dump(record, stream, allow_nan=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, destination)
+
     def _execute(self) -> None:
         try:
+            self._save_class_distribution()
             self._forward_start()
             for round_number in range(1, self.settings.rounds + 1):
                 with self._lock:

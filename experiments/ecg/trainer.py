@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader, Dataset, Subset
 
 from app.config import Settings
 from app.federation import StateDict
-from app.training import classification_confusion, DataBundle, make_partitions
+from app.training import classification_confusion, class_distribution, DataBundle, make_partitions
 
 
 INPUT_CHANNELS = 12
@@ -289,6 +289,8 @@ def _capped_indices(size: int, limit: int, seed: int) -> np.ndarray:
 
 
 def load_data(settings: Settings) -> DataBundle:
+    if settings.partition_mode == "manual":
+        raise ValueError("manual partitioning is not supported for multilabel ECG")
     root = Path(settings.data_dir) / "ECG" / "preprocessed"
     train_frame = _read_split(root, "train")
     test_frame = _read_split(root, "test")
@@ -344,7 +346,14 @@ def load_data(settings: Settings) -> DataBundle:
         shuffle=False,
         num_workers=0,
     )
-    return DataBundle(train_loader, test_loader, len(train_subset))
+    local_targets = np.zeros((len(local_indices), CLASS_COUNT), dtype=np.int64)
+    for row, codes in enumerate(train_frame.iloc[local_indices][INTERNAL_LABELS_COLUMN]):
+        local_targets[row, list(codes)] = 1
+    return DataBundle(
+        train_loader, test_loader, len(train_subset),
+        class_distribution(local_targets, [str(item) for item in range(CLASS_COUNT)],
+                           multilabel=True),
+    )
 
 
 def train_local(

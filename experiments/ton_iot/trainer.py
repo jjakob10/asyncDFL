@@ -16,7 +16,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from app.config import Settings
 from app.federation import StateDict
-from app.training import classification_confusion, DataBundle, make_partitions
+from app.training import classification_confusion, class_distribution, DataBundle, make_partitions
 
 
 _FEATURE_COUNT = 42
@@ -169,6 +169,7 @@ def load_data(settings: Settings) -> DataBundle:
             max(1, len(train_y) // max(1, settings.client_count) // 2),
         ),
         empty_client_ids=settings.empty_client_ids,
+        client_classes=settings.client_classes,
     )
     local_indices = partitions[settings.client_id]
     train_loader = None
@@ -200,7 +201,10 @@ def load_data(settings: Settings) -> DataBundle:
     metadata_path.write_text(
         json.dumps(metadata, indent=2) + "\n", encoding="utf-8"
     )
-    return DataBundle(train_loader, test_loader, len(local_indices))
+    return DataBundle(
+        train_loader, test_loader, len(local_indices),
+        class_distribution(train_y[local_indices], ["0", "1"]),
+    )
 
 
 def train_local(

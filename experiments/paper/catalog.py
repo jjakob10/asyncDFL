@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
+
+from app.config import Settings, parse_client_classes
 
 
 MANIFEST_PATH = Path(__file__).with_name("manifest.json")
@@ -38,6 +40,10 @@ class PaperExperiment:
     momentum: float
     seed: int
     clients: tuple[ClientTopology, ...]
+    partition_mode: str = "iid"
+    dirichlet_alpha: float = 0.5
+    min_partition_size: int = 100
+    client_classes: dict[int, tuple[int, ...]] = field(default_factory=dict)
 
     @property
     def head_client_ids(self) -> tuple[int, ...]:
@@ -144,6 +150,8 @@ def resolve_clients(
 
 def build_catalog(manifest: dict[str, Any] | None = None) -> tuple[PaperExperiment, ...]:
     data = manifest or load_manifest()
+    if "experiments" in data:
+        return _explicit_catalog(data)
     defaults = data["defaults"]
     experiments: list[PaperExperiment] = []
     for dataset, dataset_config in data["datasets"].items():
@@ -207,8 +215,53 @@ def build_catalog(manifest: dict[str, Any] | None = None) -> tuple[PaperExperime
     return tuple(experiments)
 
 
-def experiment_by_id(experiment_id: str) -> PaperExperiment:
-    matches = [item for item in build_catalog() if item.experiment_id == experiment_id]
+def _explicit_catalog(data: dict[str, Any]) -> tuple[PaperExperiment, ...]:
+    experiments = []
+    for entry in data["experiments"]:
+        dataset = entry["dataset"]
+        config = {**data.get("defaults", {}), **data["datasets"][dataset], **entry}
+        count = config["client_count"]
+        if type(count) is not int or count < 3:
+            raise ValueError("ring/star experiments require at least three clients")
+        topology = config["topology_name"]
+        if topology == "ring":
+            edges = ring_edges(count, 2)
+        elif topology == "star":
+            edges = tuple((0, item) for item in range(1, count))
+        else:
+            raise ValueError("explicit topology_name must be ring or star")
+        mapping = parse_client_classes(config.get("client_classes", {}), count)
+        settings = Settings(
+            client_id=0, client_name="client-0", client_count=count,
+            head_client_ids=(count - 1,), partition_mode=config["partition_mode"],
+            client_classes=mapping, dirichlet_alpha=config.get("dirichlet_alpha", 0.5),
+            rounds=config["rounds"], local_epochs=config["local_epochs"],
+            batch_size=config["batch_size"],
+        )
+        settings.validate()
+        experiments.append(PaperExperiment(
+            experiment_id=config["experiment_id"], dataset=dataset,
+            trainer_module=config["trainer_module"], dockerfile=config["dockerfile"],
+            topology_name=topology, client_count=count, edges=edges,
+            empty_client_ids=(), disconnected_client_ids=(),
+            rounds=settings.rounds, local_epochs=settings.local_epochs,
+            batch_size=settings.batch_size, learning_rate=config["learning_rate"],
+            momentum=config["momentum"], seed=config["seed"],
+            clients=resolve_clients(count, edges, (), ()),
+            partition_mode=settings.partition_mode,
+            dirichlet_alpha=settings.dirichlet_alpha,
+            min_partition_size=config.get("min_partition_size", 100),
+            client_classes=mapping,
+        ))
+    if len({item.experiment_id for item in experiments}) != len(experiments):
+        raise ValueError("manifest contains duplicate experiment IDs")
+    return tuple(experiments)
+
+
+def experiment_by_id(
+    experiment_id: str, manifest: dict[str, Any] | None = None,
+) -> PaperExperiment:
+    matches = [item for item in build_catalog(manifest) if item.experiment_id == experiment_id]
     if not matches:
         raise KeyError(f"unknown paper experiment: {experiment_id}")
     return matches[0]

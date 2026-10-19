@@ -28,6 +28,7 @@ from experiments.paper.catalog import (
     PaperExperiment,
     build_catalog,
     experiment_by_id,
+    load_manifest,
 )
 
 
@@ -35,7 +36,6 @@ from scripts.plot_metrics import load_experiments, plot_final_metrics
 
 
 DEFAULT_RESULTS_ROOT = REPOSITORY_ROOT / "results" / "paper"
-DEFAULT_GENERATED_ROOT = DEFAULT_RESULTS_ROOT / ".generated"
 
 
 def default_run_id(experiment_id: str) -> str:
@@ -75,7 +75,10 @@ def _service_environment(
         "LEARNING_RATE": str(experiment.learning_rate),
         "MOMENTUM": str(experiment.momentum),
         "SEED": str(experiment.seed),
-        "PARTITION_MODE": "iid",
+        "PARTITION_MODE": experiment.partition_mode,
+        "DIRICHLET_ALPHA": str(experiment.dirichlet_alpha),
+        "MIN_PARTITION_SIZE": str(experiment.min_partition_size),
+        "CLIENT_CLASSES": json.dumps(experiment.client_classes),
         "HEAD_START_DELAY": "8",
         "REQUEST_TIMEOUT": "5",
         "REQUEST_RETRIES": "6",
@@ -399,9 +402,11 @@ def summarize_collection(root: Path, show_client_points: bool = False) -> list[P
     return [csv_path, markdown_path, chart_path]
 
 
-def _filtered_catalog(dataset: str | None) -> list[PaperExperiment]:
+def _filtered_catalog(
+    dataset: str | None, manifest: dict[str, Any] | None = None,
+) -> list[PaperExperiment]:
     return [
-        item for item in build_catalog() if dataset is None or item.dataset == dataset
+        item for item in build_catalog(manifest) if dataset is None or item.dataset == dataset
     ]
 
 def wait_for_completion(
@@ -476,7 +481,7 @@ def _run_compose(
 
 
 def _selected_experiments(args: argparse.Namespace) -> list[PaperExperiment]:
-    catalog = list(build_catalog())
+    catalog = list(build_catalog(load_manifest(args.manifest) if args.manifest else None))
     requested = set(args.experiment_ids)
     selected = [
         item
@@ -509,7 +514,7 @@ def build_parser() -> argparse.ArgumentParser:
     render.add_argument("experiment_id")
     render.add_argument("--run-id")
     render.add_argument("--output", type=Path)
-    render.add_argument("--results-root", type=Path, default=DEFAULT_RESULTS_ROOT)
+    render.add_argument("--results-root", type=Path)
     render.add_argument("--ton-iot-path", type=Path)
 
     for command in ("run", "smoke"):
@@ -521,20 +526,39 @@ def build_parser() -> argparse.ArgumentParser:
         child.add_argument("--topology")
         child.add_argument("--local-epochs", type=int)
         child.add_argument("--run-id")
-        child.add_argument("--results-root", type=Path, default=DEFAULT_RESULTS_ROOT)
+        child.add_argument("--results-root", type=Path)
         child.add_argument("--ton-iot-path", type=Path)
 
     summary = subparsers.add_parser("summarize")
     summary.add_argument("run_directory", type=Path)
     summary.add_argument("--show-client-points", action="store_true")
+    for name in ("list", "render-compose", "run", "smoke"):
+        subparsers.choices[name].add_argument(
+            "--manifest", type=Path, help="experiment manifest (default: paper)",
+        )
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if hasattr(args, "results_root"):
+        try:
+            manifest = load_manifest(args.manifest) if args.manifest else {}
+            if args.results_root is None:
+                args.results_root = REPOSITORY_ROOT / manifest.get(
+                    "results_root", DEFAULT_RESULTS_ROOT,
+                )
+        except (OSError, ValueError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
     if args.command == "list":
-        for experiment in _filtered_catalog(args.dataset):
-            print(experiment.experiment_id)
+        try:
+            manifest = load_manifest(args.manifest) if args.manifest else None
+            for experiment in _filtered_catalog(args.dataset, manifest):
+                print(experiment.experiment_id)
+        except (KeyError, OSError, ValueError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
         return 0
     if args.command == "summarize":
         try:
@@ -554,10 +578,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "render-compose":
         try:
-            experiment = experiment_by_id(args.experiment_id)
+            experiment = experiment_by_id(
+                args.experiment_id,
+                load_manifest(args.manifest) if args.manifest else None,
+            )
             run_id = args.run_id or default_run_id(experiment.experiment_id)
             output = args.output or (
-                DEFAULT_GENERATED_ROOT / f"{experiment.experiment_id}-{run_id}.json"
+                args.results_root / ".generated" / f"{experiment.experiment_id}-{run_id}.json"
             )
             compose_path, run_directory = render_compose(
                 experiment,
@@ -575,13 +602,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         experiments = _selected_experiments(args)
-    except (KeyError, ValueError) as exc:
+    except (KeyError, OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     for experiment in experiments:
         run_id = args.run_id or default_run_id(experiment.experiment_id)
         output = (
-            DEFAULT_GENERATED_ROOT / f"{experiment.experiment_id}-{run_id}.json"
+            args.results_root / ".generated" / f"{experiment.experiment_id}-{run_id}.json"
         )
         try:
             compose_path, run_directory = render_compose(

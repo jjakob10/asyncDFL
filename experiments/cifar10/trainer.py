@@ -10,7 +10,7 @@ from torchvision import datasets, transforms
 
 from app.config import Settings
 from app.federation import StateDict
-from app.training import classification_confusion, DataBundle, make_partitions
+from app.training import classification_confusion, class_distribution, DataBundle, make_partitions
 
 
 class Cifar10CNN(nn.Module):
@@ -85,6 +85,7 @@ def load_data(settings: Settings) -> DataBundle:
             max(1, len(labels) // settings.client_count // 2),
         ),
         empty_client_ids=settings.empty_client_ids,
+        client_classes=settings.client_classes,
     )
     local_indices = candidate_indices[partitions[settings.client_id]]
     train_subset = Subset(train_dataset, local_indices.tolist())
@@ -111,7 +112,10 @@ def load_data(settings: Settings) -> DataBundle:
         shuffle=False,
         num_workers=0,
     )
-    return DataBundle(train_loader, test_loader, len(train_subset))
+    return DataBundle(
+        train_loader, test_loader, len(train_subset),
+        class_distribution(labels[partitions[settings.client_id]], list(getattr(train_dataset, "classes", [str(item) for item in range(10)]))),
+    )
 
 
 def train_local(

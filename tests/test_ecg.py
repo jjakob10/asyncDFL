@@ -322,3 +322,22 @@ def test_dataset_rejects_invalid_hdf5_records(
 
     with pytest.raises((KeyError, ValueError), match=message):
         next(iter(bundle.test_loader))
+
+
+def test_ecg_distribution_counts_local_positive_diagnoses(tmp_path: Path) -> None:
+    import numpy as np
+
+    _write_ecg_data(tmp_path)
+    for client_id, empty_ids in [(0, ()), (1, (1,))]:
+        bundle = trainer.load_data(_settings(
+            tmp_path, client_id=client_id, empty_client_ids=empty_ids, max_train_samples=6,
+        ))
+        expected = np.zeros(trainer.CLASS_COUNT, dtype=np.int64)
+        if bundle.train_loader is not None:
+            subset = bundle.train_loader.dataset
+            frame = subset.dataset.frame.iloc[subset.indices]
+            for codes in frame[trainer.INTERNAL_LABELS_COLUMN]:
+                expected[list(codes)] += 1
+        assert bundle.class_distribution["counts"] == expected.tolist()
+        assert bundle.class_distribution["sample_count"] == bundle.sample_count
+        assert bundle.class_distribution["classification_type"] == "multilabel"

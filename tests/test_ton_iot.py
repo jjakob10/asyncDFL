@@ -49,6 +49,8 @@ def test_ton_iot_preprocessing_and_model_smoke(tmp_path: Path) -> None:
     model = trainer.create_model()
     inputs, _ = next(iter(data.test_loader))
 
+    assert data.class_distribution["sample_count"] == 20
+    assert sum(data.class_distribution["counts"]) == 20
     assert data.sample_count == 20
     assert model(inputs).shape == (len(inputs),)
     assert (tmp_path / "preprocessing_client_0.json").is_file()

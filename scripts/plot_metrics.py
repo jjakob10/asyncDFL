@@ -38,6 +38,7 @@ class MetricRecord:
     run_id: str | None = None
     started_at: datetime | None = None
     round_number: int | None = None
+    neighbor_count: int | None = None
 
 
 @dataclass(frozen=True)
@@ -145,6 +146,7 @@ def load_metrics_file(path: Path, expected_client_id: int) -> list[MetricRecord]
                     model_version=model_version,
                     time=timestamp,
                     values=values,
+                    neighbor_count=_neighbor_count(raw_record, location),
                     run_id=raw_record.get("run_id"),
                     round_number=(
                         _parse_integer(raw_record["round"], "round", location)
@@ -160,6 +162,20 @@ def load_metrics_file(path: Path, expected_client_id: int) -> list[MetricRecord]
     if not records:
         raise MetricsPlotError(f"{path}: metrics file contains no records")
     return records
+
+
+def _neighbor_count(record: dict, location: str) -> int | None:
+    if "neighbor_versions" in record:
+        peers = record["neighbor_versions"]
+        if not isinstance(peers, list):
+            raise MetricsPlotError(f"{location}: neighbor_versions must be a list")
+        return len(peers)
+    if "participants" in record:
+        participants = _parse_integer(record["participants"], "participants", location)
+        if participants < 1:
+            raise MetricsPlotError(f"{location}: participants must include the local model")
+        return participants - 1
+    return None
 
 
 def _experiment_labels(paths: Sequence[Path]) -> list[str]:
@@ -280,6 +296,7 @@ def plot_metrics(
     output_dir: Path,
     x_axis: str,
     phase: str,
+    show_neighbor_count: bool = False,
 ) -> list[Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     client_ids = sorted(
@@ -322,7 +339,40 @@ def plot_metrics(
             )
             axis.set_ylabel(metric)
             axis.grid(True, alpha=0.3)
-            axis.legend()
+            if show_neighbor_count and metric == "accuracy" and phase != "train":
+                peer_axis = None
+                for index, experiment in enumerate(experiments):
+                    records = experiment.clients.get(client_id, [])
+                    usable = [item for item in records if "accuracy" in item.values["test"]]
+                    if any(item.neighbor_count is None for item in usable):
+                        print(f"warning: {experiment.label}: client {client_id} has missing "
+                              "neighbor counts; those observations are omitted", file=sys.stderr)
+                    known = [item for item in usable if item.neighbor_count is not None]
+                    if not known:
+                        continue
+                    if peer_axis is None:
+                        peer_axis = axis.twinx()
+                        peer_axis.set_ylabel("Contributing neighbors")
+                        peer_axis.yaxis.set_major_locator(MaxNLocator(integer=True))
+                    first_time = min(item.time for item in records)
+                    points = sorted((
+                        item.model_version if x_axis == "model_version" else
+                        (item.time - first_time).total_seconds(), item.neighbor_count
+                    ) for item in known)
+                    peer_axis.plot(
+                        [point[0] for point in points], [point[1] for point in points],
+                        color=colors(index % colors.N), linestyle=":", marker="s",
+                        markersize=3, label=f"{experiment.label} — neighbors",
+                    )
+                if peer_axis is not None:
+                    peer_axis.set_ylim(0, max(1, peer_axis.get_ylim()[1]))
+                    handles, labels = axis.get_legend_handles_labels()
+                    peer_handles, peer_labels = peer_axis.get_legend_handles_labels()
+                    axis.legend(handles + peer_handles, labels + peer_labels)
+                else:
+                    axis.legend()
+            else:
+                axis.legend()
             figure.tight_layout()
 
             output_path = (
@@ -518,6 +568,71 @@ def plot_confusions(experiment: Experiment, output_dir: Path) -> list[Path]:
     return written
 
 
+def plot_class_distribution(experiment: Experiment, output_dir: Path) -> list[Path]:
+    rows = []
+    missing = []
+    labels = None
+    classification_type = None
+    for client_id, records in sorted(experiment.clients.items()):
+        source = experiment.path / f"client_{client_id}_class_distribution.json"
+        if not source.is_file():
+            missing.append(client_id)
+            continue
+        try:
+            raw = json.loads(source.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise MetricsPlotError(f"{source}: invalid class distribution: {exc}") from exc
+        if not isinstance(raw, dict) or raw.get("client_id") != client_id:
+            raise MetricsPlotError(f"{source}: distribution client ID does not match")
+        run_ids = {item.run_id for item in records if item.run_id is not None}
+        if run_ids and run_ids != {raw.get("run_id")}:
+            raise MetricsPlotError(f"{source}: distribution run ID does not match metrics")
+        names, counts = raw.get("labels"), raw.get("counts")
+        total, kind = raw.get("sample_count"), raw.get("classification_type")
+        if (not isinstance(names, list) or not names
+                or any(not isinstance(name, str) or not name for name in names)
+                or len(set(names)) != len(names)
+                or not isinstance(counts, list) or len(counts) != len(names)
+                or any(type(count) is not int or count < 0 for count in counts)
+                or type(total) is not int or total < 0
+                or kind not in {"multiclass", "multilabel"}):
+            raise MetricsPlotError(f"{source}: invalid class labels or counts")
+        if ((kind == "multiclass" and sum(counts) != total)
+                or (kind == "multilabel" and any(count > total for count in counts))):
+            raise MetricsPlotError(f"{source}: class counts disagree with sample_count")
+        if labels is not None and (labels != names or classification_type != kind):
+            raise MetricsPlotError(f"{source}: inconsistent class labels or classification type")
+        labels, classification_type = names, kind
+        rows.append((client_id, counts))
+    if missing:
+        print(f"warning: {experiment.label}: missing training class distributions for "
+              f"clients {missing}; omitted from heatmap", file=sys.stderr)
+    if not rows:
+        return []
+    matrix = np.asarray([counts for _, counts in rows])
+    figure, axis = plt.subplots(figsize=(max(8, len(labels) * 0.65), max(4, len(rows) * 0.5)))
+    display = axis.imshow(matrix, aspect="auto", cmap="Blues", vmin=0,
+                          vmax=max(1, int(matrix.max())))
+    axis.set_xticks(range(len(labels)), labels, rotation=45, ha="right")
+    axis.set_yticks(range(len(rows)), [f"Client {client_id}" for client_id, _ in rows])
+    axis.set_xlabel("Class")
+    axis.set_ylabel("Client")
+    axis.set_title(f"{experiment.label} — Training class distribution")
+    for row in range(len(rows)):
+        for column in range(len(labels)):
+            axis.text(column, row, str(matrix[row, column]), ha="center", va="center",
+                      fontsize=8, color="white" if matrix[row, column] > display.norm.vmax / 2 else "black")
+    figure.colorbar(display, ax=axis, label=(
+        "Positive training samples" if classification_type == "multilabel" else "Training samples"
+    ))
+    figure.tight_layout()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    destination = output_dir / "class_distribution.png"
+    figure.savefig(destination, dpi=150)
+    plt.close(figure)
+    return [destination]
+
+
 def plot_final_metrics(
     experiments: Sequence[Experiment], output_dir: Path,
     show_client_points: bool = False,
@@ -529,6 +644,7 @@ def plot_final_metrics(
         )
         written.extend(plot_combined_metrics(experiment, directory, show_client_points))
         written.extend(plot_confusions(experiment, directory))
+        written.extend(plot_class_distribution(experiment, directory))
     return written
 
 def build_parser() -> argparse.ArgumentParser:
@@ -549,6 +665,10 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("train", "test", "both"),
         default="both",
         help="metric phase to plot (default: both)",
+    )
+    parser.add_argument(
+        "--show-neighbor-count", action="store_true",
+        help="overlay contributing neighbor counts on individual test accuracy plots",
     )
     parser.add_argument(
         "--show-client-points", action="store_true",
@@ -575,7 +695,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     output_dir = Path(args.paths[-1])
     try:
         experiments = load_experiments(experiment_paths)
-        written = plot_metrics(experiments, output_dir, args.x_axis, args.phase)
+        written = plot_metrics(experiments, output_dir, args.x_axis, args.phase,
+                               args.show_neighbor_count)
         written.extend(plot_final_metrics(experiments, output_dir,
                                           args.show_client_points))
     except (MetricsPlotError, OSError) as exc:

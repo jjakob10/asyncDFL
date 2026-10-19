@@ -131,6 +131,9 @@ def test_load_data_selects_reproducible_dirichlet_partitions(
         assert indices == candidates[expected[client_id]].tolist()
         assert repeated.train_loader.dataset.indices == indices
         assert bundle.sample_count == len(indices) >= minimum
+        distribution = bundle.class_distribution
+        assert distribution["sample_count"] == len(indices)
+        assert distribution["counts"] == np.bincount(labels[indices], minlength=10).tolist()
         selected.extend(indices)
         if capped:
             assert bundle.test_loader.dataset.indices == test_indices.tolist()
