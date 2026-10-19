@@ -32,6 +32,7 @@ from experiments.paper.catalog import (
 )
 
 
+from scripts.experiment_compose import build_compose
 from scripts.plot_metrics import load_experiments, plot_final_metrics
 
 
@@ -41,63 +42,6 @@ DEFAULT_RESULTS_ROOT = REPOSITORY_ROOT / "results" / "paper"
 def default_run_id(experiment_id: str) -> str:
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return f"{experiment_id}-{timestamp}"
-
-
-def _csv(values: Sequence[int]) -> str:
-    return ",".join(str(item) for item in values)
-
-
-def _service_environment(
-    experiment: PaperExperiment,
-    client_id: int,
-    run_id: str,
-    results_directory: Path,
-    smoke: bool,
-    ton_iot_path: Path | None,
-) -> dict[str, str]:
-    client = experiment.clients[client_id]
-    neighbors = ",".join(
-        f"http://client-{neighbor}:9000" for neighbor in client.neighbors
-    )
-    environment = {
-        "TRAINER_MODULE": experiment.trainer_module,
-        "API_PORT": "9000",
-        "CLIENT_COUNT": str(experiment.client_count),
-        "CLIENT_ID": str(client_id),
-        "CLIENT_NAME": f"client-{client_id}",
-        "HEAD_CLIENT_IDS": _csv(experiment.head_client_ids),
-        "RUN_ID": run_id,
-        "EMPTY_CLIENT_IDS": _csv(experiment.empty_client_ids),
-        "NEIGHBORS": neighbors,
-        "ROUNDS": "1" if smoke else str(experiment.rounds),
-        "LOCAL_EPOCHS": "1" if smoke else str(experiment.local_epochs),
-        "BATCH_SIZE": str(experiment.batch_size),
-        "LEARNING_RATE": str(experiment.learning_rate),
-        "MOMENTUM": str(experiment.momentum),
-        "SEED": str(experiment.seed),
-        "PARTITION_MODE": experiment.partition_mode,
-        "DIRICHLET_ALPHA": str(experiment.dirichlet_alpha),
-        "MIN_PARTITION_SIZE": str(experiment.min_partition_size),
-        "CLIENT_CLASSES": json.dumps(experiment.client_classes),
-        "HEAD_START_DELAY": "8",
-        "REQUEST_TIMEOUT": "5",
-        "REQUEST_RETRIES": "6",
-        "RETRY_DELAY": "1",
-        "RESULTS_DIR": "/results",
-        "EXPERIMENT_ID": experiment.experiment_id,
-        "TOPOLOGY_NAME": experiment.topology_name,
-        "COMPONENT_ID": str(client.component_id),
-        "COMPONENT_SIZE": str(client.component_size),
-        "PAPER_ROLE": client.paper_role,
-        "MAX_TRAIN_SAMPLES": "400" if smoke else "0",
-        "MAX_TEST_SAMPLES": "200" if smoke else "0",
-        "TORCH_NUM_THREADS": "1",
-    }
-    if experiment.dataset == "ton_iot":
-        if ton_iot_path is None:
-            raise ValueError("TON_IOT_PATH or --ton-iot-path is required")
-        environment["TON_IOT_PATH"] = "/data/ton_iot/Train_Test_Network.csv"
-    return environment
 
 
 def resolved_spec(
@@ -120,57 +64,7 @@ def render_compose(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     run_directory = (results_root / experiment.experiment_id / run_id).resolve()
     run_directory.mkdir(parents=True, exist_ok=True)
-    image_name = f"dfl-paper-{experiment.dataset}:latest"
-    services: dict[str, Any] = {}
-    for client in experiment.clients:
-        volumes = [f"{run_directory}:/results"]
-        if experiment.dataset == "ton_iot":
-            assert ton_iot_path is not None
-            volumes.append(
-                f"{ton_iot_path.resolve()}:/data/ton_iot/Train_Test_Network.csv:ro"
-            )
-        service: dict[str, Any] = {
-            "image": image_name,
-            "pull_policy": "never",
-            "restart": "no",
-            "ports": [f"{8000 + client.client_id}:9000"],
-            "environment": _service_environment(
-                experiment,
-                client.client_id,
-                run_id,
-                run_directory,
-                smoke,
-                ton_iot_path,
-            ),
-            "volumes": volumes,
-            "healthcheck": {
-                "test": [
-                    "CMD",
-                    "python",
-                    "-c",
-                    (
-                        "import os, urllib.request; "
-                        "urllib.request.urlopen("
-                        "'http://127.0.0.1:' + os.environ['API_PORT'] "
-                        "+ '/health', timeout=2)"
-                    ),
-                ],
-                "interval": "5s",
-                "timeout": "3s",
-                "start_period": "30s",
-                "retries": 12,
-            },
-        }
-        if client.client_id == 0:
-            service["build"] = {
-                "context": str(REPOSITORY_ROOT),
-                "dockerfile": experiment.dockerfile,
-            }
-        services[f"client-{client.client_id}"] = service
-    compose = {
-        "name": f"dfl-{experiment.experiment_id}".replace("_", "-"),
-        "services": services,
-    }
+    compose = build_compose(experiment, run_id, run_directory, smoke, ton_iot_path)
     output_path.write_text(
         json.dumps(compose, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )

@@ -565,6 +565,91 @@ configuration, and individual `experiments` entries, in that order. Each entry
 specifies `experiment_id`, `dataset`, `topology_name` (`ring` or `star`), and
 `partition_mode`; manual entries also specify `client_classes`.
 
+### Export manifests for individual Docker Compose runs
+
+Use `scripts/export_manifest.py` to turn a manifest into one runnable directory
+per experiment. The exporter accepts both the Thiago manifests and the original
+paper manifest. It only writes configuration files: it does not build images,
+start containers, or create training results.
+
+From the repository root, export the six MNIST and six CIFAR-10 scenarios:
+
+```bash
+python scripts/export_manifest.py --manifest experiments/thiago/mnist/manifest.json --output results/exports/thiago/mnist --run-id trial-1
+python scripts/export_manifest.py --manifest experiments/thiago/cifar10/manifest.json --output results/exports/thiago/cifar10 --run-id trial-1
+```
+
+For example, the manual MNIST ring is exported as:
+
+```text
+results/exports/thiago/mnist/thiago-mnist-ring-6-manual/
+  compose.yaml
+  .env
+  env/
+    client_0.env
+    ...
+    client_5.env
+```
+
+The shared `.env` contains training settings, partition parameters (including
+the manual `CLIENT_CLASSES` JSON), and `RUN_ID`. Each client file contains its
+identity, neighbors, component, and role. Compose reads these files directly;
+there is no need to load the `.env` into PowerShell manually. The files also
+retain explicit empty neighbor lists for isolated paper clients.
+
+With Docker Desktop running, execute a single scenario from its exported
+directory. This PowerShell example starts the stack, waits for all six clients,
+and removes the containers even if monitoring fails:
+
+```powershell
+$repo = (Get-Location).Path
+Push-Location "$repo\results\exports\thiago\mnist\thiago-mnist-ring-6-manual"
+try {
+    docker compose up --build -d
+    if ($LASTEXITCODE -ne 0) { throw "Docker Compose failed to start." }
+    python "$repo\scripts\wait_for_run.py" --client-count 6
+    if ($LASTEXITCODE -ne 0) { throw "The experiment failed." }
+}
+finally {
+    docker compose down
+    Pop-Location
+}
+```
+
+Results follow the manifest's `results_root`, resolved relative to the checkout,
+then `<experiment-id>/<RUN_ID>`. A paper manifest without `results_root` uses
+`results/paper`. For the example above, generate all plots, including the
+class-distribution heatmap and the optional neighbor-count line, with:
+
+```powershell
+python "$repo\scripts\plot_metrics.py" --show-neighbor-count "$repo\results\thiago\mnist\thiago-mnist-ring-6-manual\trial-1" "$repo\outputs\thiago\mnist\thiago-mnist-ring-6-manual\trial-1"
+```
+
+Edit the exported `.env` to change `ROUNDS`, `LOCAL_EPOCHS`, `BATCH_SIZE`,
+`LEARNING_RATE`, `SEED`, sample caps, or partition parameters. For a fresh run,
+stop the existing stack, change `RUN_ID` (for example, to `trial-2`), and run
+the same Compose commands again. Both the clients' run identity and the host
+results directory change together, preserving previous results. Run IDs must
+use letters, digits, hyphens, or underscores, start with a letter or digit,
+and contain at most 128 characters. Reusing an ID reuses its results directory.
+Regenerate from the manifest when changing topology or client count.
+
+Omit `--run-id` to generate a shared UTC timestamp ID. Add `--smoke` when
+exporting to use one round/epoch and caps of 400 training and 200 test samples.
+The destination must be new or empty; an existing export is never overwritten.
+To export the full paper catalog, also supply the external TON_IOT CSV:
+
+```bash
+python scripts/export_manifest.py --manifest experiments/paper/manifest.json --output results/exports/paper --ton-iot-path "C:/datasets/Train_Test_Network.csv"
+```
+
+The exported files reference this checkout's code and Dockerfiles; they do not
+include copies. Keep the export in its generated location relative to the
+checkout, or regenerate after moving it. The `EXPORT_*` entries in `.env` hold
+these path references. TON_IOT data is mounted read-only and must remain
+available at the supplied path. Run scenarios sequentially because they reuse
+host ports starting at 8000. Stopping a stack retains its training results.
+
 ### Manual non-IID configuration
 
 For MNIST, CIFAR-10, and TON_IOT, select `PARTITION_MODE=manual` and supply
