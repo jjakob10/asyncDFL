@@ -20,6 +20,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 COPY experiments/__init__.py ./experiments/__init__.py
 COPY experiments/mnist ./experiments/mnist
+COPY experiments/johann ./experiments/johann
 
 ENV API_PORT=9000
 

@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from app.config import Settings
 from app.runtime import ClientRuntime
+from app.timed_runtime import ModelUnavailable, TimedClientRuntime
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,6 +21,7 @@ logging.basicConfig(
 
 class StartRequest(BaseModel):
     run_id: str = Field(min_length=1, max_length=128)
+    start_at: float | None = Field(default=None, gt=0, allow_inf_nan=False)
 
 
 def create_app(
@@ -31,9 +33,10 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        app.state.runtime = runtime or ClientRuntime(configured_settings)
+        runtime_type = TimedClientRuntime if configured_settings.run_duration_seconds else ClientRuntime
+        app.state.runtime = runtime or runtime_type(configured_settings)
 
-        if auto_start_head and configured_settings.is_head:
+        if auto_start_head and configured_settings.auto_start_head and configured_settings.is_head:
             def delayed_start() -> None:
                 time.sleep(configured_settings.head_start_delay)
                 app.state.runtime.start(configured_settings.run_id)
@@ -57,7 +60,12 @@ def create_app(
 
     @app.post("/start", status_code=status.HTTP_202_ACCEPTED)
     def start(body: StartRequest, request: Request) -> dict[str, str]:
-        result = get_runtime(request).start(body.run_id)
+        try:
+            client = get_runtime(request)
+            result = (client.start(body.run_id) if body.start_at is None
+                      else client.start(body.run_id, body.start_at))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         if result == "conflict":
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -67,7 +75,10 @@ def create_app(
 
     @app.get("/model")
     def model(request: Request) -> Response:
-        payload, headers = get_runtime(request).model_snapshot()
+        try:
+            payload, headers = get_runtime(request).model_snapshot()
+        except ModelUnavailable as exc:
+            raise HTTPException(status_code=503, detail="client_offline") from exc
         return Response(
             content=payload,
             media_type="application/octet-stream",

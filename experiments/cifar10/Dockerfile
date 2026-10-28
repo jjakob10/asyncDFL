@@ -20,6 +20,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 COPY experiments/__init__.py ./experiments/__init__.py
 COPY experiments/cifar10 ./experiments/cifar10
+COPY experiments/johann ./experiments/johann
 
 ENV API_PORT=9000
 

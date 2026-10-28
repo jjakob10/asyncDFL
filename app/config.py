@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from dataclasses import dataclass, field
@@ -90,6 +91,14 @@ class Settings:
     paper_role: str = "R"
     ton_iot_path: str = ""
     client_classes: dict[int, tuple[int, ...]] = field(default_factory=dict)
+    run_duration_seconds: float = 0.0
+    evaluation_interval_seconds: float = 10.0
+    offline_client_ids: tuple[int, ...] = ()
+    offline_start_fraction: float = 0.3
+    offline_end_fraction: float = 0.6
+    auto_start_head: bool = True
+    johann_distribution: str = "distributed"
+    evaluation_split: str = "validation"
 
     @property
     def is_head(self) -> bool:
@@ -163,11 +172,35 @@ class Settings:
             client_classes=parse_client_classes(
                 json.loads(os.getenv("CLIENT_CLASSES", "{}")), client_count
             ),
+            run_duration_seconds=float(os.getenv("RUN_DURATION_SECONDS", "0")),
+            evaluation_interval_seconds=float(os.getenv("EVALUATION_INTERVAL_SECONDS", "10")),
+            offline_client_ids=_env_int_tuple("OFFLINE_CLIENT_IDS"),
+            offline_start_fraction=float(os.getenv("OFFLINE_START_FRACTION", "0.3")),
+            offline_end_fraction=float(os.getenv("OFFLINE_END_FRACTION", "0.6")),
+            auto_start_head=_env_bool("AUTO_START_HEAD", True),
+            johann_distribution=os.getenv("JOHANN_DISTRIBUTION", "distributed"),
+            evaluation_split=os.getenv("EVALUATION_SPLIT", "validation"),
         )
         settings.validate()
         return settings
 
     def validate(self) -> None:
+        if not math.isfinite(self.run_duration_seconds) or self.run_duration_seconds < 0:
+            raise ValueError("RUN_DURATION_SECONDS must be finite and nonnegative")
+        if not math.isfinite(self.evaluation_interval_seconds) or self.evaluation_interval_seconds <= 0:
+            raise ValueError("EVALUATION_INTERVAL_SECONDS must be finite and positive")
+        if not 0 < self.offline_start_fraction < self.offline_end_fraction < 1:
+            raise ValueError("offline fractions must satisfy 0 < start < end < 1")
+        if len(set(self.offline_client_ids)) != len(self.offline_client_ids) or any(
+            not 0 <= item < self.client_count for item in self.offline_client_ids
+        ):
+            raise ValueError("OFFLINE_CLIENT_IDS must contain unique valid client IDs")
+        if self.offline_client_ids and not self.run_duration_seconds:
+            raise ValueError("offline schedules require RUN_DURATION_SECONDS")
+        if self.johann_distribution not in {"distributed", "concentrated"}:
+            raise ValueError("JOHANN_DISTRIBUTION must be distributed or concentrated")
+        if self.evaluation_split not in {"validation", "test"}:
+            raise ValueError("EVALUATION_SPLIT must be validation or test")
         if not 1 <= self.api_port <= 65535:
             raise ValueError("API_PORT must be between 1 and 65535")
         if not self.trainer_module:
