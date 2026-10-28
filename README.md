@@ -1,5 +1,9 @@
 # Decentralized Federated Learning Experiments
 
+The controlled M0 baseline for temporary client outages and return is documented
+in [the Johann experiment README](experiments/johann/README.md), with MNIST and
+CIFAR-10 scenarios, time budgets, recovery metrics, and execution commands.
+
 This repository provides a generic decentralized federated learning client and
 pluggable experiment trainers. Independent FastAPI clients train on disjoint
 dataset partitions and exchange model snapshots with their configured neighbors.

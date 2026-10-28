@@ -1,0 +1,42 @@
+{
+  "dataset": "cifar10",
+  "duration_seconds": 1800,
+  "evaluation_interval_seconds": 30,
+  "client_count": 8,
+  "tracked_classes": [
+    3,
+    8
+  ],
+  "group_r": [
+    0,
+    4
+  ],
+  "group_c": [
+    2,
+    6
+  ],
+  "offline_start_fraction": 0.3,
+  "offline_end_fraction": 0.6,
+  "validation_fraction": 0.1,
+  "concentration_fraction": 0.8,
+  "local_epochs": 1,
+  "batch_size": 64,
+  "learning_rate": 0.01,
+  "momentum": 0.9,
+  "pilot_seed": 7,
+  "collection_seeds": [
+    42,
+    43,
+    44,
+    45,
+    46
+  ],
+  "scenarios": [
+    "distributed-r",
+    "distributed-c",
+    "distributed-none",
+    "concentrated-r",
+    "concentrated-c",
+    "concentrated-none"
+  ]
+}

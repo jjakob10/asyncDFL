@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -57,16 +58,31 @@ class ClientRuntime:
         self._latest_metrics: dict[str, Any] | None = None
         self._errors: list[dict[str, str]] = []
         self._worker: threading.Thread | None = None
+        self._start_at: float | None = None
+        self._start_monotonic: float | None = None
 
-    def start(self, run_id: str) -> str:
+    def start(self, run_id: str, start_at: float | None = None) -> str:
         with self._lock:
             if self._run_id == run_id:
+                if start_at != self._start_at:
+                    return "conflict"
                 return "already_started"
             if self._run_id is not None:
                 return "conflict"
+            if start_at is not None and (
+                not math.isfinite(start_at) or not 0 < start_at < time.time() + 3600
+            ):
+                raise ValueError("start_at must be a finite Unix timestamp within the next hour")
             self._run_id = run_id
+            self._start_at = start_at
+            self._start_monotonic = time.monotonic() + (
+                start_at - time.time() if start_at is not None else 0
+            )
             self._state = "running"
-            self._started_at = _utc_now()
+            self._started_at = (
+                datetime.fromtimestamp(start_at, timezone.utc).isoformat()
+                if start_at is not None else _utc_now()
+            )
             self._worker = threading.Thread(
                 target=self._execute,
                 name=f"dfl-client-{self.settings.client_id}",
@@ -107,6 +123,7 @@ class ClientRuntime:
                 "sample_count": self.data.sample_count,
                 "neighbors": list(self.settings.neighbors),
                 "started_at": self._started_at,
+                "start_at": self._start_at,
                 "finished_at": self._finished_at,
                 "latest_metrics": self._latest_metrics,
                 "recent_errors": list(self._errors[-20:]),
@@ -149,10 +166,13 @@ class ClientRuntime:
 
     def _forward_to_neighbor(self, neighbor: str) -> None:
         try:
+            body = {"run_id": self._run_id}
+            if self._start_at is not None:
+                body["start_at"] = self._start_at
             self._request_with_retries(
                 "POST",
                 f"{neighbor}/start",
-                json={"run_id": self._run_id},
+                json=body,
             )
         except Exception as exc:
             self._record_error("start propagation", neighbor, str(exc))
@@ -239,6 +259,8 @@ class ClientRuntime:
         try:
             self._save_class_distribution()
             self._forward_start()
+            if self._start_monotonic is not None:
+                time.sleep(max(0, self._start_monotonic - time.monotonic()))
             for round_number in range(1, self.settings.rounds + 1):
                 with self._lock:
                     base_state = clone_state_dict(self._model)
