@@ -189,6 +189,23 @@ usam zero nas métricas descritivas; o desfecho de recall acompanhado exige supo
 positivo em ambas as classes. `diagnostics.csv` separa o modelo preservado, o
 modelo local antes da primeira mistura e o modelo publicado depois dela.
 
+Cada resumo também gera `charts/client_<id>_recall_by_class.png` e CSV, com uma
+curva por classe, eixo Y entre 0 e 1 e os tempos reais das avaliações periódicas
+e final. Suporte zero aparece como lacuna; as avaliações de diagnóstico não entram
+nessas curvas. A cadência de observação permanece igual.
+`charts/client_<id>_aggregation_contributions.png` e CSV mostram os pesos diretos
+normalizados do FedAvg por cliente e ciclo publicado, incluindo o modelo local;
+cada coluna conhecida soma 100%. A escala de cores é sempre 0–100%, e ciclos sem
+registro ficam cinza. Não é uma atribuição histórica de conhecimento.
+
+A propagação de `/start` tenta novamente em segundo plano enquanto o serviço
+estiver ativo, mesmo após o treino local. Um vizinho que receber o início tarde
+usa somente o tempo restante da janela original, sem alterar `start_at` ou o
+término. Depois dessa janela, uma execução ainda não aceita retorna HTTP 422 com
+`run_expired`; a propagação registra o erro e encerra as tentativas para aquele
+vizinho. Uma execução já aceita continua respondendo `already_started` para os
+mesmos `run_id` e `start_at`, inclusive depois de terminar.
+
 O **desfecho principal** é a área normalizada do recall médio de 3/8 dos seis
 clientes continuamente online, entre retorno e término. No controle sem ausência,
 há resultados excluindo R e excluindo C para os respectivos pares. A integração

@@ -1,6 +1,7 @@
 from pathlib import Path
 import time
 
+import httpx
 import pytest
 import torch
 from torch import nn
@@ -156,10 +157,12 @@ def test_start_flood_visits_topology_once(
         def request(method, url, **kwargs):
             assert method == "POST"
             assert url.endswith("/start")
-            runtimes[url.removesuffix("/start")].start(kwargs["json"]["run_id"])
+            result = runtimes[url.removesuffix("/start")].start(kwargs["json"]["run_id"])
+            return httpx.Response(202, json={"result": result, "run_id": run_id},
+                                  request=httpx.Request(method, url))
 
         monkeypatch.setattr(runtime, "_execute", propagate)
-        monkeypatch.setattr(runtime, "_request_with_retries", request)
+        monkeypatch.setattr("app.runtime.httpx.request", request)
 
     assert runtimes[f"http://client-{head}:8000"].start(run_id) == "started"
     deadline = time.monotonic() + 5
@@ -172,5 +175,7 @@ def test_start_flood_visits_topology_once(
 
     assert all(runtime.status()["run_id"] == run_id for runtime in runtimes.values())
     assert executions == [1] * client_count
+    for runtime in runtimes.values():
+        runtime.close()
     for runtime in runtimes.values():
         assert runtime.start(run_id) == "already_started"

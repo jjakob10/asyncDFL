@@ -13,6 +13,9 @@ class StubRuntime:
         self.settings = settings
         self.run_id: str | None = None
 
+    def close(self):
+        pass
+
     def start(self, run_id: str) -> str:
         if self.run_id == run_id:
             return "already_started"

@@ -6,7 +6,6 @@ import math
 import os
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -60,6 +59,9 @@ class ClientRuntime:
         self._worker: threading.Thread | None = None
         self._start_at: float | None = None
         self._start_monotonic: float | None = None
+        self._stop_propagation = threading.Event()
+        self._propagation_threads: list[threading.Thread] = []
+        self._propagation: dict[str, dict[str, Any]] = {}
 
     def start(self, run_id: str, start_at: float | None = None) -> str:
         with self._lock:
@@ -69,6 +71,8 @@ class ClientRuntime:
                 return "already_started"
             if self._run_id is not None:
                 return "conflict"
+            if self._stop_propagation.is_set():
+                raise ValueError("client service is shutting down")
             if start_at is not None and (
                 not math.isfinite(start_at) or not 0 < start_at < time.time() + 3600
             ):
@@ -88,6 +92,7 @@ class ClientRuntime:
                 name=f"dfl-client-{self.settings.client_id}",
                 daemon=True,
             )
+            self._forward_start()
             self._worker.start()
             return "started"
 
@@ -127,6 +132,7 @@ class ClientRuntime:
                 "finished_at": self._finished_at,
                 "latest_metrics": self._latest_metrics,
                 "recent_errors": list(self._errors[-20:]),
+                "start_propagation": {url: dict(value) for url, value in self._propagation.items()},
             }
 
     def wait(self, timeout: float | None = None) -> None:
@@ -165,21 +171,73 @@ class ClientRuntime:
         raise last_error
 
     def _forward_to_neighbor(self, neighbor: str) -> None:
-        try:
-            body = {"run_id": self._run_id}
-            if self._start_at is not None:
-                body["start_at"] = self._start_at
-            self._request_with_retries(
-                "POST",
-                f"{neighbor}/start",
-                json=body,
-            )
-        except Exception as exc:
-            self._record_error("start propagation", neighbor, str(exc))
+        body = {"run_id": self._run_id}
+        if self._start_at is not None:
+            body["start_at"] = self._start_at
+        while not self._stop_propagation.is_set():
+            with self._lock:
+                self._propagation[neighbor]["attempts"] += 1
+            terminal = False
+            state = "failed"
+            try:
+                response = httpx.request(
+                    "POST", f"{neighbor}/start", json=body,
+                    timeout=self.settings.request_timeout,
+                )
+                terminal = (response.status_code < 500
+                            and response.status_code not in (408, 429))
+                if response.status_code == 409:
+                    state = "conflict"
+                response.raise_for_status()
+                result = response.json()
+                if (not isinstance(result, dict) or result.get("run_id") != self._run_id
+                        or result.get("result") not in ("started", "already_started")):
+                    raise ValueError("invalid start acknowledgement")
+                with self._lock:
+                    self._propagation[neighbor].update(state="confirmed", last_error=None)
+                return
+            except (httpx.HTTPError, ValueError) as exc:
+                with self._lock:
+                    self._propagation[neighbor].update(
+                        state=state if terminal else "retrying", last_error=str(exc),
+                    )
+                if terminal:
+                    self._record_error("start propagation", neighbor, str(exc))
+                    return
+            if self._stop_propagation.wait(self.settings.retry_delay):
+                break
+        with self._lock:
+            self._propagation[neighbor]["state"] = "cancelled"
 
     def _forward_start(self) -> None:
-        with ThreadPoolExecutor(max_workers=max(1, len(self.settings.neighbors))) as executor:
-            list(executor.map(self._forward_to_neighbor, self.settings.neighbors))
+        with self._lock:
+            for neighbor in self.settings.neighbors:
+                if neighbor in self._propagation or self._stop_propagation.is_set():
+                    continue
+                self._propagation[neighbor] = {
+                    "state": "pending", "attempts": 0, "last_error": None,
+                }
+                worker = threading.Thread(target=self._forward_to_neighbor, args=(neighbor,),
+                                          name=f"start-{self.settings.client_id}-{len(self._propagation)}",
+                                          daemon=True)
+                self._propagation_threads.append(worker)
+                worker.start()
+
+    def close(self) -> None:
+        """Cancel propagation, including retries surviving local training completion."""
+        self._stop_propagation.set()
+        for worker in self._propagation_threads:
+            worker.join(timeout=self.settings.request_timeout + 1)
+
+    def _save_topology(self) -> None:
+        destination = Path(self.settings.results_dir) / f"client_{self.settings.client_id}_topology.json"
+        temporary = destination.with_suffix(".tmp")
+        temporary.write_text(json.dumps({
+            "client_id": self.settings.client_id, "run_id": self._run_id,
+            "client_count": self.settings.client_count,
+            "neighbors": list(self.settings.neighbors),
+        }, allow_nan=False), encoding="utf-8")
+        os.replace(temporary, destination)
 
     def _fetch_neighbor(
         self,
@@ -257,8 +315,8 @@ class ClientRuntime:
 
     def _execute(self) -> None:
         try:
+            self._save_topology()
             self._save_class_distribution()
-            self._forward_start()
             if self._start_monotonic is not None:
                 time.sleep(max(0, self._start_monotonic - time.monotonic()))
             for round_number in range(1, self.settings.rounds + 1):

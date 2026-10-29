@@ -12,6 +12,7 @@ import numpy as np
 from matplotlib import pyplot as plt
 
 from experiments.johann.catalog import GROUPS
+from scripts.plot_metrics import load_experiments, plot_training_diagnostics
 
 
 def read_json(path):
@@ -202,6 +203,7 @@ def summarize_run(directory):
     leave = duration * spec["offline_start_fraction"]
     charts = directory / "charts"
     charts.mkdir(exist_ok=True)
+    plot_training_diagnostics(load_experiments([directory])[0], charts)
     groups = {"R": list(GROUPS["r"]), "C": list(GROUPS["c"]), "demais": [1, 3, 5, 7]}
     if spec["offline_client_ids"]:
         groups["continuamente_online"] = sorted(set(range(8)) - set(spec["offline_client_ids"]))

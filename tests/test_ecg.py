@@ -115,7 +115,9 @@ def test_train_and_evaluate_return_compatible_cpu_state(
     validate_compatible(initial_state, state)
     assert all(tensor.device.type == "cpu" for tensor in state.values())
     assert set(train_metrics) == {"loss", "accuracy"}
-    assert set(test_metrics) == {"loss", "accuracy"}
+    assert set(test_metrics) == {"loss", "accuracy"} | {
+        f"{metric}_{i}" for metric in ("recall", "support") for i in range(20)
+    }
     assert all(math.isfinite(value) for value in train_metrics.values())
     assert all(math.isfinite(value) for value in test_metrics.values())
 
