@@ -199,6 +199,36 @@ class ConfusionTrainer(Protocol):
     ) -> dict[str, Any]: ...
 
 
+class ClassRecall:
+    """Accumulate per-class support and true positives from evaluation outputs."""
+
+    def __init__(self, class_count: int, kind: str = "multiclass") -> None:
+        self.kind = kind
+        self.support = torch.zeros(class_count, dtype=torch.int64)
+        self.correct = torch.zeros(class_count, dtype=torch.int64)
+
+    def update(self, outputs: torch.Tensor, targets: torch.Tensor) -> None:
+        if self.kind == "multilabel":
+            actual = targets.bool()
+            predicted = torch.sigmoid(outputs) >= 0.5
+            self.support += actual.sum(dim=0).cpu()
+            self.correct += (actual & predicted).sum(dim=0).cpu()
+        else:
+            actual = targets.long().reshape(-1)
+            predicted = (outputs.argmax(dim=1) if self.kind == "multiclass"
+                         else (torch.sigmoid(outputs) >= 0.5).long().reshape(-1))
+            self.support += torch.bincount(actual.cpu(), minlength=len(self.support))
+            self.correct += torch.bincount(actual[actual == predicted].cpu(),
+                                           minlength=len(self.support))
+
+    def metrics(self) -> dict[str, float]:
+        values = {}
+        for index, (correct, support) in enumerate(zip(self.correct, self.support)):
+            values[f"recall_{index}"] = int(correct) / max(1, int(support))
+            values[f"support_{index}"] = int(support)
+        return values
+
+
 @torch.no_grad()
 def classification_confusion(
     model: nn.Module,

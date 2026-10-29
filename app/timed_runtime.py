@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import threading
 import time
 from pathlib import Path
@@ -63,8 +64,12 @@ class TimedClientRuntime(ClientRuntime):
     def start(self, run_id: str, start_at: float | None = None) -> str:
         with self._lock:
             if self._run_id is None:
-                if start_at is None or not time.time() < start_at < time.time() + 3600:
-                    raise ValueError("timed runs require start_at within the next hour")
+                now = time.time()
+                if (start_at is None or not math.isfinite(start_at)
+                        or not 0 < start_at < now + 3600):
+                    raise ValueError("timed runs require a finite start_at within the next hour")
+                if now >= start_at + self.settings.run_duration_seconds:
+                    raise ValueError("run_expired: original training window has ended")
                 start = time.monotonic() + start_at - time.time()
                 self.control = RunControl(
                     start, self.settings.run_duration_seconds,
@@ -222,9 +227,8 @@ class TimedClientRuntime(ClientRuntime):
         observers = []
         finished_state = "failed"
         try:
+            self._save_topology()
             self._save_class_distribution()
-            self._forward_start()
-            self.control.checkpoint()
             observers = [threading.Thread(target=f, daemon=True)
                          for f in (self._observe_events, self._observe_models)]
             for observer in observers:

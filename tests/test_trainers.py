@@ -70,7 +70,9 @@ def test_classifier_train_and_evaluate_smoke(trainer, image_shape) -> None:
     test_metrics = trainer.evaluate(state, loader)
 
     assert set(train_metrics) == {"loss", "accuracy"}
-    assert set(test_metrics) == {"loss", "accuracy"}
+    assert set(test_metrics) == {"loss", "accuracy"} | {
+        f"{metric}_{i}" for metric in ("recall", "support") for i in range(10)
+    }
     assert all(tensor.device.type == "cpu" for tensor in state.values())
 
 

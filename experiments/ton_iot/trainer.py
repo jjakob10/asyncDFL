@@ -16,7 +16,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from app.config import Settings
 from app.federation import StateDict
-from app.training import classification_confusion, class_distribution, DataBundle, make_partitions
+from app.training import ClassRecall, classification_confusion, class_distribution, DataBundle, make_partitions
 
 
 _FEATURE_COUNT = 42
@@ -250,18 +250,21 @@ def evaluate(state: StateDict, test_loader: DataLoader) -> dict[str, float]:
     model = create_model()
     model.load_state_dict(state)
     model.eval()
+    recall = ClassRecall(2, "binary")
     criterion = nn.BCEWithLogitsLoss(reduction="sum")
     total_loss = 0.0
     total_correct = 0
     total_seen = 0
     for inputs, targets in test_loader:
         logits = model(inputs)
+        recall.update(logits, targets)
         total_loss += criterion(logits, targets).item()
         total_correct += (
             (torch.sigmoid(logits) >= 0.5) == targets.bool()
         ).sum().item()
         total_seen += targets.size(0)
     return {
+        **recall.metrics(),
         "loss": total_loss / max(total_seen, 1),
         "accuracy": total_correct / max(total_seen, 1),
     }

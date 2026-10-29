@@ -424,9 +424,17 @@ aggregate, and evaluate models. Their models retain aggregation weight 1;
 `sample_count` remains 0 in model headers and metrics. Nonempty clients use
 their number of unique local training examples as the aggregation weight.
 
-Clients are asynchronous. An unavailable neighbor is recorded and skipped after
-the configured retries. A start run ID is forwarded through configured neighbors and accepted
-exactly once by every process.
+Clients are asynchronous. Model fetches skip an unavailable neighbor after the
+configured retries. Start propagation runs independently for each neighbor and
+keeps retrying timeouts, connection failures, HTTP 408/429, and 5xx responses,
+using `REQUEST_TIMEOUT` and `RETRY_DELAY`. These attempts continue after local
+training finishes or fails, until acknowledgement or service shutdown. Only
+`started`/`already_started` responses for the same run confirm delivery. Conflicts
+and permanent errors stop that neighbor's attempts. Repeated starts never create
+another training worker. `GET /status` exposes `start_propagation`, keyed by URL,
+with `state`, `attempts`, and `last_error`. Retry failures update this bounded
+status rather than appending an unlimited error history. Service shutdown cancels
+retry waits; in-flight requests remain bounded by their HTTP timeout.
 
 The HTTP interface is unchanged:
 
@@ -703,6 +711,41 @@ excluding the client's own model. Failed fetches are excluded. Counts come from
 `neighbor_versions`, or `participants - 1` in older logs. Missing observations
 are omitted with a warning. The line uses the same model-version or elapsed-time
 axis as accuracy, and is disabled by default. Train-only plots do not show it.
+All individual charts share the same right-axis range, from zero to the maximum
+configured degree across all loaded experiments. New runs save
+`client_<id>_topology.json` with run/client identity, client count, and configured
+neighbor URLs. The plotter also reads `resolved_experiment.json`. If topology is
+incomplete, it warns and estimates the limit from known degrees and observed
+contributors. Completely isolated topologies display only the zero tick.
+
+### Per-class recall and direct aggregation contributions
+
+MNIST, CIFAR-10, TON_IOT, and ECG record `test.recall_<index>` and
+`test.support_<index>` during the existing evaluation pass. Recall is
+`TP / (TP + FN)`; binary tasks report both classes, and ECG reports positive
+recall for each diagnosis. Zero support records recall zero, but is masked in
+the chart. `client_<id>_recall_by_class.png` contains one curve per class with
+a fixed 0–1 Y axis and rounds on X. Class names come from the distribution or
+confusion artifact, falling back to numeric indices. A matching CSV contains
+round, model version, class index/name, support, and recall; undefined values
+are blank. Johann uses its existing periodic/final evaluations and elapsed time.
+
+`client_<id>_aggregation_contributions.png` displays all clients on Y and local
+rounds on X. Each cell is that participant's actual FedAvg weight divided by
+the total weight aggregated in that round, including the local model. Thus each
+known column sums to 100%, using a common 0–100% color scale. Noncontributors
+are zero; missing rounds or weights are gray. Empty-data clients retain their
+actual weight of one in round-based runs. This measures direct model mixing,
+not historical influence or improvement in model quality. The matching CSV has
+one row per round, a column per client, normalized fractions in 0–1, and blanks
+for unknown rounds. Duplicate rounds select the highest model version, then the
+last record on ties.
+
+The CLI and paper/Thiago summaries generate both diagnostics automatically;
+Johann summaries place them in `charts/`. Older results without the required
+recall/support or weight metadata produce warnings and omit unavailable plots
+or mask unavailable points. Final confusion counts cannot reconstruct temporal
+recall. Mixed-run artifacts and invalid weights/topologies are rejected.
 
 For example, after the full manual MNIST run:
 

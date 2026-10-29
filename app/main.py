@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request, status
@@ -35,14 +34,19 @@ def create_app(
     async def lifespan(app: FastAPI):
         runtime_type = TimedClientRuntime if configured_settings.run_duration_seconds else ClientRuntime
         app.state.runtime = runtime or runtime_type(configured_settings)
+        shutdown = threading.Event()
 
         if auto_start_head and configured_settings.auto_start_head and configured_settings.is_head:
             def delayed_start() -> None:
-                time.sleep(configured_settings.head_start_delay)
-                app.state.runtime.start(configured_settings.run_id)
+                if not shutdown.wait(configured_settings.head_start_delay):
+                    app.state.runtime.start(configured_settings.run_id)
 
             threading.Thread(target=delayed_start, name="head-auto-start", daemon=True).start()
-        yield
+        try:
+            yield
+        finally:
+            shutdown.set()
+            app.state.runtime.close()
 
     app = FastAPI(
         title="Decentralized Federated Learning Client",

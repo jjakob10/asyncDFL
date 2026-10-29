@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader, Dataset, Subset
 
 from app.config import Settings
 from app.federation import StateDict
-from app.training import classification_confusion, class_distribution, DataBundle, make_partitions
+from app.training import ClassRecall, classification_confusion, class_distribution, DataBundle, make_partitions
 
 
 INPUT_CHANNELS = 12
@@ -411,6 +411,7 @@ def evaluate(state: StateDict, test_loader: DataLoader) -> dict[str, float]:
     model = create_model()
     model.load_state_dict(state)
     model.eval()
+    recall = ClassRecall(CLASS_COUNT, "multilabel")
     criterion = nn.BCEWithLogitsLoss(reduction="sum")
     total_loss = 0.0
     total_correct = 0
@@ -419,6 +420,7 @@ def evaluate(state: StateDict, test_loader: DataLoader) -> dict[str, float]:
 
     for inputs, targets in test_loader:
         logits = model(inputs)
+        recall.update(logits, targets)
         total_loss += criterion(logits, targets).item()
         total_correct += (
             (torch.sigmoid(logits) >= 0.5)
@@ -431,6 +433,7 @@ def evaluate(state: StateDict, test_loader: DataLoader) -> dict[str, float]:
         total_elements += targets.numel()
 
     return {
+        **recall.metrics(),
         "loss": float(total_loss / max(total_elements, 1)),
         "accuracy": float(total_correct / max(total_seen, 1)),
     }

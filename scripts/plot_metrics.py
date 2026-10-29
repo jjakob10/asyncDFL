@@ -18,7 +18,7 @@ import numpy as np
 
 matplotlib.use("Agg")
 from matplotlib import pyplot as plt
-from matplotlib.ticker import MaxNLocator
+from matplotlib.ticker import MaxNLocator, PercentFormatter
 
 
 CLIENT_FILE_PATTERN = re.compile(r"client_(\d+)_metrics\.jsonl$")
@@ -39,6 +39,9 @@ class MetricRecord:
     started_at: datetime | None = None
     round_number: int | None = None
     neighbor_count: int | None = None
+    aggregation_weights: dict[int, float] | None = None
+    aggregation_weight: float | None = None
+    neighbor_versions: tuple[dict[str, Any], ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -46,6 +49,7 @@ class Experiment:
     path: Path
     label: str
     clients: dict[int, list[MetricRecord]]
+    run_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -101,7 +105,8 @@ def _parse_phase(
     return values
 
 
-def load_metrics_file(path: Path, expected_client_id: int) -> list[MetricRecord]:
+def load_metrics_file(path: Path, expected_client_id: int,
+                      allow_empty: bool = False) -> list[MetricRecord]:
     records: list[MetricRecord] = []
     try:
         stream = path.open("r", encoding="utf-8")
@@ -147,6 +152,13 @@ def load_metrics_file(path: Path, expected_client_id: int) -> list[MetricRecord]
                     time=timestamp,
                     values=values,
                     neighbor_count=_neighbor_count(raw_record, location),
+                    aggregation_weights=_aggregation_weights(raw_record, location),
+                    aggregation_weight=(
+                        _positive_weight(raw_record["aggregation_weight"], location)
+                        if "aggregation_weight" in raw_record else None
+                    ),
+                    neighbor_versions=(tuple(dict(peer) for peer in raw_record["neighbor_versions"])
+                                       if "neighbor_versions" in raw_record else None),
                     run_id=raw_record.get("run_id"),
                     round_number=(
                         _parse_integer(raw_record["round"], "round", location)
@@ -159,7 +171,7 @@ def load_metrics_file(path: Path, expected_client_id: int) -> list[MetricRecord]
                 )
             )
 
-    if not records:
+    if not records and not allow_empty:
         raise MetricsPlotError(f"{path}: metrics file contains no records")
     return records
 
@@ -176,6 +188,168 @@ def _neighbor_count(record: dict, location: str) -> int | None:
             raise MetricsPlotError(f"{location}: participants must include the local model")
         return participants - 1
     return None
+
+
+def _positive_weight(value: Any, location: str) -> float:
+    if (isinstance(value, bool) or not isinstance(value, (int, float))
+            or not math.isfinite(value) or value <= 0):
+        raise MetricsPlotError(f"{location}: invalid aggregation weight")
+    return float(value)
+
+
+def _aggregation_weights(record: dict, location: str) -> dict[int, float] | None:
+    peers = record.get("neighbor_versions")
+    if peers is None:
+        return None
+    entries = [record, *peers]
+    weights = {}
+    missing = False
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise MetricsPlotError(f"{location}: aggregation participants must be objects")
+        if "aggregation_weight" not in entry or "client_id" not in entry:
+            missing = True
+            continue
+        client = _parse_integer(entry["client_id"], "client_id", location)
+        weight = _positive_weight(entry["aggregation_weight"], location)
+        if client < 0 or client in weights:
+            raise MetricsPlotError(f"{location}: invalid or duplicate aggregation weight/client")
+        weights[client] = float(weight)
+    if missing:
+        return None
+    if "participants" in record and (
+        _parse_integer(record["participants"], "participants", location) != len(entries)
+    ):
+        raise MetricsPlotError(f"{location}: participants disagree with neighbor_versions")
+    return weights
+
+
+def _read_artifact(path: Path) -> dict:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise MetricsPlotError(f"{path}: cannot read artifact: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise MetricsPlotError(f"{path}: artifact must be an object")
+    return raw
+
+
+def _check_identity(raw: dict, experiment: Experiment, path: Path,
+                    client_id: int | None = None) -> None:
+    runs = {r.run_id for items in experiment.clients.values() for r in items
+            if r.run_id is not None}
+    if experiment.run_id is not None:
+        runs.add(experiment.run_id)
+    spec_path = experiment.path / "resolved_experiment.json"
+    if not runs and spec_path.is_file():
+        run_id = _read_artifact(spec_path).get("run_id")
+        if run_id is not None:
+            runs.add(run_id)
+    if runs and raw.get("run_id") not in runs:
+        raise MetricsPlotError(f"{path}: artifact run ID does not match metrics")
+    if client_id is not None and (type(raw.get("client_id")) is not int
+                                  or raw["client_id"] != client_id):
+        raise MetricsPlotError(f"{path}: artifact client ID does not match")
+
+
+def load_topology(experiment: Experiment) -> tuple[list[int], int | None]:
+    """Return the client registry and maximum configured degree, if recoverable."""
+    ids = set(experiment.clients)
+    degrees: dict[int, int] = {}
+    counts = set()
+    spec_path = experiment.path / "resolved_experiment.json"
+    if spec_path.is_file():
+        spec = _read_artifact(spec_path)
+        if "run_id" in spec:
+            _check_identity(spec, experiment, spec_path)
+        count = spec.get("client_count")
+        edges = spec.get("edges")
+        clients = spec.get("clients")
+        if count is not None:
+            if type(count) is not int or count < 1:
+                raise MetricsPlotError(f"{spec_path}: invalid client_count")
+            counts.add(count)
+        if clients is not None:
+            if not isinstance(clients, list):
+                raise MetricsPlotError(f"{spec_path}: invalid clients")
+            for client in clients:
+                if not isinstance(client, dict):
+                    raise MetricsPlotError(f"{spec_path}: invalid client")
+                client_id, neighbors = client.get("client_id"), client.get("neighbors")
+                if (type(client_id) is not int or client_id < 0 or client_id in degrees
+                        or not isinstance(neighbors, list)
+                        or any(type(n) is not int or n < 0 or n == client_id for n in neighbors)
+                        or len(set(neighbors)) != len(neighbors)):
+                    raise MetricsPlotError(f"{spec_path}: invalid topology client/neighbors")
+                degrees[client_id] = len(neighbors)
+                ids.update([client_id, *neighbors])
+        elif edges is not None:
+            if not isinstance(edges, list):
+                raise MetricsPlotError(f"{spec_path}: invalid edges")
+            adjacency: dict[int, set[int]] = {i: set() for i in range(count or 0)}
+            for edge in edges:
+                if (not isinstance(edge, list) or len(edge) != 2
+                        or any(type(n) is not int or n < 0 for n in edge) or edge[0] == edge[1]):
+                    raise MetricsPlotError(f"{spec_path}: invalid edge")
+                a, b = edge
+                adjacency.setdefault(a, set()).add(b)
+                adjacency.setdefault(b, set()).add(a)
+            degrees.update({i: len(peers) for i, peers in adjacency.items()})
+            ids.update(adjacency)
+    for path in sorted(experiment.path.glob("client_*_topology.json")):
+        match = re.fullmatch(r"client_(\d+)_topology.json", path.name)
+        if match is None:
+            continue
+        client = int(match[1])
+        raw = _read_artifact(path)
+        _check_identity(raw, experiment, path, client)
+        count, peers = raw.get("client_count"), raw.get("neighbors")
+        if (type(count) is not int or count < 1 or not 0 <= client < count
+                or not isinstance(peers, list)
+                or any(not isinstance(p, str) or not p for p in peers)
+                or len(set(peers)) != len(peers) or len(peers) >= count):
+            raise MetricsPlotError(f"{path}: invalid topology")
+        if client in degrees and degrees[client] != len(peers):
+            raise MetricsPlotError(f"{path}: topology disagrees with resolved experiment")
+        counts.add(count)
+        degrees[client] = len(peers)
+        ids.add(client)
+    if len(counts) > 1:
+        raise MetricsPlotError(f"{experiment.path}: inconsistent client counts")
+    if counts:
+        count = next(iter(counts))
+        if any(i >= count or i < 0 for i in ids):
+            raise MetricsPlotError(f"{experiment.path}: client outside topology")
+        ids.update(range(count))
+    for items in experiment.clients.values():
+        for record in items:
+            if record.aggregation_weights:
+                if counts and any(i not in ids for i in record.aggregation_weights):
+                    raise MetricsPlotError(f"{experiment.path}: contributor outside topology")
+                ids.update(record.aggregation_weights)
+            if record.client_id in degrees and record.neighbor_count is not None:
+                if record.neighbor_count > degrees[record.client_id]:
+                    raise MetricsPlotError(f"{experiment.path}: contributors exceed configured degree")
+    complete = bool(degrees) and set(degrees) == ids
+    if degrees and not complete:
+        print(f"warning: {experiment.label}: incomplete topology; neighbor axis limit "
+              "is estimated from known degrees and observed contributors", file=sys.stderr)
+        observed = [r.neighbor_count or 0 for items in experiment.clients.values() for r in items]
+        return sorted(ids), max([*degrees.values(), *observed])
+    return sorted(ids), max(degrees.values()) if complete else None
+
+
+def neighbor_axis_maximum(experiments: Sequence[Experiment]) -> int:
+    maxima = []
+    for experiment in experiments:
+        _, maximum = load_topology(experiment)
+        if maximum is None:
+            print(f"warning: {experiment.label}: incomplete topology; neighbor axis limit "
+                  "is estimated from observed contributors", file=sys.stderr)
+            maximum = max((r.neighbor_count or 0 for items in experiment.clients.values()
+                           for r in items), default=0)
+        maxima.append(maximum)
+    return max(maxima, default=0)
 
 
 def _experiment_labels(paths: Sequence[Path]) -> list[str]:
@@ -207,7 +381,15 @@ def load_experiments(paths: Sequence[Path]) -> list[Experiment]:
             if match is None:
                 continue
             client_id = int(match.group(1))
-            clients[client_id] = load_metrics_file(metrics_path, client_id)
+            clients[client_id] = load_metrics_file(
+                metrics_path, client_id,
+                allow_empty=(path / f"client_{client_id}_evaluations.jsonl").is_file(),
+            )
+
+        for evaluation_path in sorted(path.glob("client_*_evaluations.jsonl")):
+            match = re.fullmatch(r"client_(\d+)_evaluations.jsonl", evaluation_path.name)
+            if match is not None:
+                clients.setdefault(int(match[1]), [])
 
         if not clients:
             raise MetricsPlotError(
@@ -215,9 +397,28 @@ def load_experiments(paths: Sequence[Path]) -> list[Experiment]:
             )
         run_ids = {record.run_id for records in clients.values()
                    for record in records if record.run_id is not None}
+        for client in clients:
+            source = path / f"client_{client}_evaluations.jsonl"
+            if not source.is_file():
+                continue
+            with source.open(encoding="utf-8") as stream:
+                for line_number, line in enumerate(stream, 1):
+                    if not line.strip():
+                        continue
+                    location = f"{source}:{line_number}"
+                    try:
+                        raw = json.loads(line)
+                    except ValueError as exc:
+                        raise MetricsPlotError(f"{location}: malformed evaluation") from exc
+                    if (not isinstance(raw, dict) or type(raw.get("client_id")) is not int
+                            or raw["client_id"] != client
+                            or not isinstance(raw.get("run_id"), str) or not raw["run_id"]):
+                        raise MetricsPlotError(f"{location}: invalid evaluation identity")
+                    run_ids.add(raw["run_id"])
         if len(run_ids) > 1:
             raise MetricsPlotError(f"{path}: metrics contain multiple run IDs")
-        experiments.append(Experiment(path=path, label=label, clients=clients))
+        experiments.append(Experiment(path=path, label=label, clients=clients,
+                                      run_id=next(iter(run_ids), None)))
     return experiments
 
 
@@ -306,11 +507,12 @@ def plot_metrics(
     line_styles = {"train": "-", "test": "--"}
     written: list[Path] = []
     emitted_warnings: set[str] = set()
+    peer_maximum = neighbor_axis_maximum(experiments) if show_neighbor_count else 0
 
     for client_id in client_ids:
-        metrics = sorted(
-            available_metrics(experiments, client_id, selected_phases(phase))
-        )
+        metrics = sorted(name for name in
+                         available_metrics(experiments, client_id, selected_phases(phase))
+                         if not re.fullmatch(r"(?:recall|support)_\d+", name))
         for metric in metrics:
             plot_series, warnings = build_series(
                 experiments, client_id, metric, phase, x_axis
@@ -365,7 +567,9 @@ def plot_metrics(
                         markersize=3, label=f"{experiment.label} — neighbors",
                     )
                 if peer_axis is not None:
-                    peer_axis.set_ylim(0, max(1, peer_axis.get_ylim()[1]))
+                    peer_axis.set_ylim(0, peer_maximum if peer_maximum else 0.5)
+                    if not peer_maximum:
+                        peer_axis.set_yticks([0])
                     handles, labels = axis.get_legend_handles_labels()
                     peer_handles, peer_labels = peer_axis.get_legend_handles_labels()
                     axis.legend(handles + peer_handles, labels + peer_labels)
@@ -383,6 +587,9 @@ def plot_metrics(
             written.append(output_path)
 
     if not written:
+        if any(list(experiment.path.glob("client_*_evaluations.jsonl"))
+               for experiment in experiments):
+            return []
         raise MetricsPlotError(
             f"no usable metrics were found for the selected phase '{phase}'"
         )
@@ -490,7 +697,7 @@ def load_confusion(path: Path, client_id: int, records: list[MetricRecord]) -> d
     run_ids = {r.run_id for r in records if r.run_id is not None}
     if run_ids and raw.get("run_id") not in run_ids:
         raise MetricsPlotError(f"{path}: confusion run ID does not match metrics")
-    if raw.get("model_version") != max(r.model_version for r in records):
+    if raw.get("model_version") != max((r.model_version for r in records), default=0):
         raise MetricsPlotError(f"{path}: confusion model version does not match final metrics")
     kind = raw.get("classification_type")
     labels = raw.get("labels")
@@ -633,6 +840,188 @@ def plot_class_distribution(experiment: Experiment, output_dir: Path) -> list[Pa
     return [destination]
 
 
+def _round_records(records: Sequence[MetricRecord]) -> dict[int, MetricRecord]:
+    selected: dict[int, MetricRecord] = {}
+    for record in records:
+        number = record.round_number if record.round_number is not None else record.model_version
+        previous = selected.get(number)
+        if previous is None or record.model_version >= previous.model_version:
+            selected[number] = record
+    return dict(sorted(selected.items()))
+
+
+def build_contribution_matrix(
+    records: Sequence[MetricRecord], client_ids: Sequence[int],
+) -> tuple[np.ndarray, np.ndarray]:
+    selected = _round_records(records)
+    if not selected:
+        return np.array([], dtype=int), np.empty((len(client_ids), 0))
+    rounds = np.arange(min(1, min(selected)), max(selected) + 1)
+    matrix = np.full((len(client_ids), len(rounds)), np.nan)
+    for column, number in enumerate(rounds):
+        record = selected.get(int(number))
+        if record is None or record.aggregation_weights is None:
+            continue
+        weights = record.aggregation_weights
+        total = sum(weights.values())
+        if not math.isfinite(total) or total <= 0 or set(weights) - set(client_ids):
+            raise MetricsPlotError("invalid contribution weights or client registry")
+        matrix[:, column] = [weights.get(client, 0) / total for client in client_ids]
+    return rounds, matrix
+
+
+def plot_contributions(experiment: Experiment, output_dir: Path) -> list[Path]:
+    client_ids, _ = load_topology(experiment)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    written = []
+    for client, records in sorted(experiment.clients.items()):
+        if not any(r.aggregation_weights is not None for r in records):
+            print(f"warning: {experiment.label}: client {client} has no aggregation weights; "
+                  "contribution chart omitted", file=sys.stderr)
+            continue
+        if any(r.aggregation_weights is None for r in records):
+            print(f"warning: {experiment.label}: client {client} has missing aggregation "
+                  "weights; those rounds are masked", file=sys.stderr)
+        rounds, matrix = build_contribution_matrix(records, client_ids)
+        figure, axis = plt.subplots(figsize=(12, max(4, len(client_ids) * 0.4)))
+        cmap = plt.get_cmap("Blues").copy()
+        cmap.set_bad("lightgray")
+        display = axis.imshow(np.ma.masked_invalid(matrix), aspect="auto", cmap=cmap,
+                              vmin=0, vmax=1, interpolation="nearest",
+                              extent=(rounds[0] - .5, rounds[-1] + .5,
+                                      len(client_ids) - .5, -.5))
+        axis.set_yticks(range(len(client_ids)), [f"Client {i}" for i in client_ids])
+        axis.xaxis.set_major_locator(MaxNLocator(integer=True))
+        axis.set_xlabel("Round")
+        axis.set_ylabel("Contributing client")
+        axis.set_title(f"{experiment.label} — Client {client} — Direct aggregation contribution")
+        figure.colorbar(display, ax=axis, label="Normalized FedAvg weight",
+                        format=PercentFormatter(xmax=1))
+        figure.tight_layout()
+        path = output_dir / f"client_{client}_aggregation_contributions.png"
+        figure.savefig(path, dpi=150)
+        plt.close(figure)
+        csv_path = path.with_suffix(".csv")
+        with csv_path.open("w", encoding="utf-8", newline="") as stream:
+            writer = csv.writer(stream)
+            writer.writerow(["round", *[f"client_{i}" for i in client_ids]])
+            for column, number in enumerate(rounds):
+                writer.writerow([number, *[value if np.isfinite(value) else ""
+                                            for value in matrix[:, column]]])
+        written.extend([path, csv_path])
+    return written
+
+
+def _class_names(experiment: Experiment, client: int) -> list[str] | None:
+    for suffix in ("class_distribution", "confusion"):
+        path = experiment.path / f"client_{client}_{suffix}.json"
+        if not path.is_file():
+            continue
+        raw = _read_artifact(path)
+        _check_identity(raw, experiment, path, client)
+        labels = raw.get("labels")
+        if (not isinstance(labels, list) or not labels
+                or any(not isinstance(label, str) or not label for label in labels)
+                or len(set(labels)) != len(labels)):
+            raise MetricsPlotError(f"{path}: invalid class labels")
+        return labels
+    return None
+
+
+def _recall_observations(experiment: Experiment, client: int) -> tuple[list[tuple], bool]:
+    source = experiment.path / f"client_{client}_evaluations.jsonl"
+    if not source.is_file():
+        return [(number, r.model_version, r.values["test"])
+                for number, r in _round_records(experiment.clients[client]).items()], False
+    selected = {}
+    with source.open(encoding="utf-8") as stream:
+        for index, line in enumerate(stream, 1):
+            if not line.strip():
+                continue
+            location = f"{source}:{index}"
+            try:
+                raw = json.loads(line)
+            except ValueError as exc:
+                raise MetricsPlotError(f"{location}: malformed evaluation") from exc
+            if not isinstance(raw, dict):
+                raise MetricsPlotError(f"{location}: invalid evaluation")
+            _check_identity(raw, experiment, source, client)
+            if raw.get("kind") not in {"periodic", "final"}:
+                continue
+            at = raw.get("captured_seconds")
+            if (isinstance(at, bool) or not isinstance(at, (int, float))
+                    or not math.isfinite(at) or at < 0):
+                raise MetricsPlotError(f"{location}: invalid evaluation time")
+            version = _parse_integer(raw.get("model_version"), "model_version", location)
+            prior = selected.get(at)
+            if prior is None or version >= prior[0]:
+                selected[at] = (version, _parse_phase(raw, "test", location))
+    return [(at, version, values) for at, (version, values) in sorted(selected.items())], True
+
+
+def plot_class_recall(experiment: Experiment, output_dir: Path) -> list[Path]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    written = []
+    for client in sorted(experiment.clients):
+        observations, timed = _recall_observations(experiment, client)
+        indices = sorted({int(name[7:]) for _, _, values in observations for name in values
+                          if re.fullmatch(r"recall_\d+", name)})
+        if not indices:
+            print(f"warning: {experiment.label}: client {client} has no per-class recall; "
+                  "recall chart omitted", file=sys.stderr)
+            continue
+        labels = _class_names(experiment, client)
+        if labels is not None and indices[-1] >= len(labels):
+            raise MetricsPlotError(f"{experiment.path}: recall index outside class labels")
+        figure, axis = plt.subplots(figsize=(11, 6))
+        colors = plt.get_cmap("tab10" if len(indices) <= 10 else "tab20")
+        csv_rows = []
+        missing_support = False
+        for index in indices:
+            name = labels[index] if labels is not None else str(index)
+            points = []
+            for at, version, values in observations:
+                recall, support = values.get(f"recall_{index}"), values.get(f"support_{index}")
+                if recall is not None and not 0 <= recall <= 1:
+                    raise MetricsPlotError("recall must be between zero and one")
+                if support is not None and (support < 0 or support != int(support)):
+                    raise MetricsPlotError("class support must be a nonnegative integer")
+                usable = recall is not None and support is not None and support > 0
+                missing_support |= recall is not None and support is None
+                points.append(recall if usable else np.nan)
+                csv_rows.append([at, version, index, name, support if support is not None else "",
+                                 recall if usable else ""])
+            axis.plot([at for at, _, _ in observations], points, label=name,
+                      color=colors(index % colors.N), marker=".")
+        if missing_support:
+            print(f"warning: {experiment.label}: client {client} has recall without support; "
+                  "those points are masked", file=sys.stderr)
+        axis.set_ylim(0, 1)
+        axis.set_xlabel("Elapsed time (s)" if timed else "Round")
+        if not timed:
+            axis.xaxis.set_major_locator(MaxNLocator(integer=True))
+        axis.set_ylabel("Recall")
+        axis.set_title(f"{experiment.label} — Client {client} — Recall by class")
+        axis.grid(alpha=.3)
+        axis.legend(title="Class", ncol=2, fontsize="small")
+        figure.tight_layout()
+        path = output_dir / f"client_{client}_recall_by_class.png"
+        figure.savefig(path, dpi=150)
+        plt.close(figure)
+        csv_path = path.with_suffix(".csv")
+        with csv_path.open("w", encoding="utf-8", newline="") as stream:
+            writer = csv.writer(stream)
+            writer.writerow(["elapsed_seconds" if timed else "round", "model_version",
+                             "class_index", "class_label", "support", "recall"])
+            writer.writerows(sorted(csv_rows, key=lambda row: (row[0], row[2])))
+        written.extend([path, csv_path])
+    return written
+
+
+def plot_training_diagnostics(experiment: Experiment, output_dir: Path) -> list[Path]:
+    return plot_class_recall(experiment, output_dir) + plot_contributions(experiment, output_dir)
+
+
 def plot_final_metrics(
     experiments: Sequence[Experiment], output_dir: Path,
     show_client_points: bool = False,
@@ -645,6 +1034,7 @@ def plot_final_metrics(
         written.extend(plot_combined_metrics(experiment, directory, show_client_points))
         written.extend(plot_confusions(experiment, directory))
         written.extend(plot_class_distribution(experiment, directory))
+        written.extend(plot_training_diagnostics(experiment, directory))
     return written
 
 def build_parser() -> argparse.ArgumentParser:

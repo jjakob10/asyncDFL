@@ -10,7 +10,7 @@ from torchvision import datasets, transforms
 
 from app.config import Settings
 from app.federation import StateDict
-from app.training import classification_confusion, class_distribution, DataBundle, make_partitions
+from app.training import ClassRecall, classification_confusion, class_distribution, DataBundle, make_partitions
 
 
 class MnistCNN(nn.Module):
@@ -153,16 +153,19 @@ def evaluate(state: StateDict, test_loader: DataLoader) -> dict[str, float]:
     model = create_model()
     model.load_state_dict(state)
     model.eval()
+    recall = ClassRecall(10, "multiclass")
     criterion = nn.CrossEntropyLoss(reduction="sum")
     total_loss = 0.0
     total_correct = 0
     total_seen = 0
     for inputs, targets in test_loader:
         outputs = model(inputs)
+        recall.update(outputs, targets)
         total_loss += criterion(outputs, targets).item()
         total_correct += (outputs.argmax(dim=1) == targets).sum().item()
         total_seen += targets.size(0)
     return {
+        **recall.metrics(),
         "loss": total_loss / max(total_seen, 1),
         "accuracy": total_correct / max(total_seen, 1),
     }
