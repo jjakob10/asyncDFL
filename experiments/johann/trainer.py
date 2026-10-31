@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+from copy import deepcopy
 from importlib import import_module
 from types import ModuleType
 
@@ -90,6 +91,75 @@ def train_controlled(base: StateDict, loader: DataLoader, settings: Settings,
     control.checkpoint()
     return ({name: value.detach().cpu() for name, value in model.state_dict().items()},
             {"loss": total_loss / max(1, seen), "accuracy": correct / max(1, seen)})
+
+
+def train_reintegration(base: StateDict, previous: StateDict, loader: DataLoader,
+                        settings: Settings, control: RunControl, dataset: str):
+    """Matched supervised/KD window; only the caller's local training dataset is used.
+
+    CE + lambda*T^2*KL(teacher || student): Hinton et al. (2015).
+    The old-snapshot teacher and one-time rejoin policy are our local adaptation.
+    """
+    with torch.random.fork_rng(devices=[]):
+        model = base_trainer(dataset).create_model()
+    model.load_state_dict(base)
+    model.train()
+    teacher = None
+    if settings.method == "M4" and settings.distillation_weight > 0:
+        # deepcopy consumes no random numbers and cannot perturb the student stream.
+        teacher = deepcopy(model)
+        teacher.load_state_dict(previous)
+        teacher.eval()
+        teacher.requires_grad_(False)
+        control.teacher_model_bytes = sum(t.numel() * t.element_size() for t in teacher.state_dict().values())
+    optimizer = torch.optim.SGD(model.parameters(), lr=settings.learning_rate, momentum=settings.momentum)
+    generator = torch.Generator().manual_seed(settings.seed + 100000 + settings.client_id)
+    batches = DataLoader(loader.dataset, batch_size=settings.batch_size, shuffle=True,
+                         num_workers=0, generator=generator)
+    if not len(batches):
+        raise ValueError("reintegration requires local training examples")
+    iterator = iter(batches)
+    total_ce = total_kd = correct = seen = 0
+    control.reintegration_active = True
+    try:
+        for _ in range(settings.rejoin_batches):
+            control.checkpoint()
+            try:
+                inputs, targets = next(iterator)
+            except StopIteration:
+                iterator = iter(batches)
+                inputs, targets = next(iterator)
+            control.checkpoint()
+            began = time.monotonic()
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            ce = nn.functional.cross_entropy(outputs, targets)
+            kd = outputs.new_zeros(())
+            if teacher is not None:
+                teacher_began = time.monotonic()
+                with torch.no_grad():
+                    probabilities = nn.functional.softmax(
+                        teacher(inputs) / settings.distillation_temperature, dim=1)
+                control.teacher_finished(len(targets), time.monotonic() - teacher_began)
+                kd = nn.functional.kl_div(
+                    nn.functional.log_softmax(outputs / settings.distillation_temperature, dim=1),
+                    probabilities, reduction="batchmean") * settings.distillation_temperature ** 2
+            loss = ce + (settings.distillation_weight * kd if teacher is not None else 0)
+            loss.backward()
+            optimizer.step()
+            count = len(targets)
+            total_ce += ce.item() * count
+            total_kd += kd.item() * count
+            correct += (outputs.argmax(1) == targets).sum().item()
+            seen += count
+            control.batch_finished(count, time.monotonic() - began)
+        control.checkpoint()
+    finally:
+        control.reintegration_active = False
+    return ({name: value.detach().cpu().clone() for name, value in model.state_dict().items()},
+            {"loss": (total_ce + (settings.distillation_weight * total_kd if teacher is not None else 0)) / seen,
+             "supervised_loss": total_ce / seen, "distillation_loss": total_kd / seen,
+             "accuracy": correct / seen})
 
 
 def metrics_from_counts(counts: np.ndarray, loss: float = 0.0) -> dict[str, float | int]:

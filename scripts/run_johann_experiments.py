@@ -1,4 +1,4 @@
-"""Run the time-budgeted Johann M0 experiment matrix sequentially."""
+"""Run the time-budgeted Johann M0-M4 experiment matrix sequentially."""
 from __future__ import annotations
 
 import argparse
@@ -19,6 +19,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from experiments.johann.catalog import SCENARIOS, compose_for, load_spec
+from app.aggregation import METHODS
 
 
 def json_write(path, value):
@@ -28,7 +29,7 @@ def json_write(path, value):
 def prepare(spec, run_id, results_root):
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,90}", run_id):
         raise ValueError("run ID must be a safe path component of at most 91 characters")
-    directory = (results_root / spec["dataset"] / spec["scenario"] / f"{run_id}-s{spec['seed']}").resolve()
+    directory = (results_root / spec["dataset"] / spec["method"] / spec["scenario"] / f"{run_id}-s{spec['seed']}").resolve()
     directory.mkdir(parents=True, exist_ok=False)
     spec = {**spec, "run_id": directory.name, "batch_run_id": run_id}
     revision = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True)
@@ -156,6 +157,15 @@ def parser():
         child.add_argument("--scenario", choices=SCENARIOS)
         child.add_argument("--all", action="store_true", help="all six scenarios")
         child.add_argument("--seeds", type=int, nargs="+")
+        child.add_argument("--methods", choices=METHODS, nargs="+", default=["M0"])
+        child.add_argument("--merge-limit-examples", type=int)
+        child.add_argument("--merge-limit-multiplier", type=int)
+        child.add_argument("--rejoin-batches", type=int)
+        child.add_argument("--distillation-weight", type=float)
+        child.add_argument("--distillation-temperature", type=float)
+        child.add_argument("--selected-config", type=Path, help="validation selection JSON; does not freeze the protocol")
+        if command == "smoke":
+            child.add_argument("--backend", choices=("docker", "local"), default="docker")
         child.add_argument("--duration", type=float)
         child.add_argument("--interval", type=float)
         child.add_argument("--run-id", default=datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
@@ -164,12 +174,43 @@ def parser():
     summary.add_argument("path", type=Path)
     summary.add_argument("--run-id", help="restrict a collection to one batch ID, without -s<seed>")
     summary.add_argument("--mode", choices=("smoke", "pilot", "collection"))
+    calibration = sub.add_parser("calibrate", help="eleven validation-only trials per dataset, seed 7")
+    calibration.add_argument("--dataset", choices=("mnist", "cifar10", "all"), default="mnist")
+    calibration.add_argument("--run-id", required=True)
+    calibration.add_argument("--results-root", type=Path, default=ROOT / "results" / "johann")
+    calibration.add_argument("--render-only", action="store_true")
+    selection = sub.add_parser("select-calibration")
+    selection.add_argument("path", type=Path)
+    selection.add_argument("--run-id", required=True)
     return result
 
 
 def main(argv=None):
     args = parser().parse_args(argv)
     try:
+        if args.command == "select-calibration":
+            from experiments.johann.calibration import select_calibration
+            selection = select_calibration(args.path, args.run_id)
+            path = args.path / f"{args.run_id}-selection.json"
+            # The run ID is also a file component here; validate it before writing.
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,90}", args.run_id):
+                raise ValueError("invalid calibration ID")
+            if path.exists():
+                raise ValueError("selection already exists; preserve its provenance")
+            json_write(path, selection)
+            print(path)
+            return 0
+        if args.command == "calibrate":
+            from experiments.johann.calibration import calibration_specs
+            datasets = ("mnist", "cifar10") if args.dataset == "all" else (args.dataset,)
+            specs = [(name, {**spec, "calibration_id": args.run_id, "calibration_trial": name})
+                     for dataset in datasets for name, spec in calibration_specs(dataset)]
+            for name, spec in specs:
+                directory, resolved = prepare(spec, f"{args.run_id}-{name}", args.results_root.resolve())
+                print(directory, flush=True)
+                if not args.render_only and not execute(directory, resolved):
+                    return 1
+            return 0
         if args.command == "summarize":
             from experiments.johann.analysis import summarize_collection, summarize_run
             if (args.path / "resolved_experiment.json").is_file():
@@ -184,8 +225,22 @@ def main(argv=None):
         seeds = args.seeds or ([42, 43, 44, 45, 46] if args.command == "run" else [7])
         if len(seeds) != len(set(seeds)):
             raise ValueError("seeds must be unique")
+        if len(args.methods) != len(set(args.methods)):
+            raise ValueError("methods must be unique")
+        if args.merge_limit_examples is not None and args.merge_limit_multiplier is not None:
+            raise ValueError("choose an absolute merge limit or a multiplier")
+        overrides = {key: getattr(args, key) for key in (
+            "merge_limit_examples", "merge_limit_multiplier", "rejoin_batches",
+            "distillation_weight", "distillation_temperature") if getattr(args, key) is not None}
+        if any(key.startswith("merge_limit") for key in overrides) and "M2" not in args.methods:
+            raise ValueError("merge limits require M2")
+        if "rejoin_batches" in overrides and not set(args.methods) & {"M3", "M4"}:
+            raise ValueError("rejoin batches require M3 or M4")
+        if any(key.startswith("distillation") for key in overrides) and "M4" not in args.methods:
+            raise ValueError("distillation parameters require M4")
         # Validate the entire selection before creating artifacts or launching Docker.
         specs = []
+        selected = json.loads(args.selected_config.read_text(encoding="utf-8")) if args.selected_config else None
         for dataset in datasets:
             for scenario in scenarios:
                 for seed in seeds:
@@ -195,16 +250,32 @@ def main(argv=None):
                         mode = "smoke"
                         duration = duration if duration is not None else 30
                         interval = interval if interval is not None else duration / 20
-                    specs.append(load_spec(dataset, scenario, seed, duration, interval, mode))
+                    for method in args.methods:
+                        keys = ({"merge_limit_examples", "merge_limit_multiplier"} if method == "M2" else
+                                {"rejoin_batches"} if method == "M3" else
+                                {"rejoin_batches", "distillation_weight", "distillation_temperature"} if method == "M4" else set())
+                        parameters = dict(selected["datasets"][dataset]["methods"][method]) if selected else {}
+                        parameters.update({key: value for key, value in overrides.items() if key in keys})
+                        specs.append(load_spec(dataset, scenario, seed, duration, interval, mode, method, parameters))
+                        specs[-1]["execution_backend"] = "local_smoke" if getattr(args, "backend", "docker") == "local" else "docker"
+                        if selected:
+                            specs[-1]["calibration_id"] = selected["calibration_id"]
+                            specs[-1]["calibration_confirmation"] = args.command == "pilot" and seed in (8, 9)
         if args.command == "list":
             for spec in specs:
-                print(f"{spec['dataset']}/{spec['scenario']}")
+                print(f"{spec['dataset']}/{spec['method']}/{spec['scenario']} {spec['method_parameters']}")
             return 0
         for spec in specs:
             directory, spec = prepare(spec, args.run_id, args.results_root.resolve())
             print(directory, flush=True)
-            if args.command != "render-compose" and not execute(directory, spec):
-                return 1
+            if args.command != "render-compose":
+                if getattr(args, "backend", "docker") == "local":
+                    from scripts.johann_local_smoke import execute_local_smoke
+                    success = execute_local_smoke(directory, spec, args.results_root.resolve() / "local_data" / spec["dataset"])
+                else:
+                    success = execute(directory, spec)
+                if not success:
+                    return 1
         return 0
     except (OSError, ValueError, KeyError) as exc:
         print(f"error: {exc}", file=sys.stderr)

@@ -6,4 +6,7 @@ __pycache__/
 results/
 outputs/*.pptx
 outputs/*
+!outputs/tcc/
+outputs/tcc/*
+!outputs/tcc/implementacao_M1_M4_referencias_e_contribuicoes.md
 tmp/*

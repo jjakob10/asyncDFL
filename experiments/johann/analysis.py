@@ -30,7 +30,7 @@ def json_sha256(value: object) -> str:
 def pairing_protocol(directory: Path, spec: dict) -> dict:
     """Compare runtime contents, not Docker's scenario-specific image labels."""
     protocol = {key: spec.get(key) for key in (
-        "method", "duration_seconds", "evaluation_interval_seconds", "evaluation_split",
+        "method", "method_parameters", "training_age_unit", "execution_backend", "duration_seconds", "evaluation_interval_seconds", "evaluation_split",
         "tracked_classes", "group_r", "group_c", "edges", "offline_start_fraction", "offline_end_fraction",
         "validation_fraction", "concentration_fraction", "local_epochs", "batch_size", "learning_rate", "momentum",
         "source_sha256")}
@@ -65,17 +65,30 @@ def pairing_protocol(directory: Path, spec: dict) -> dict:
     return protocol
 
 
-def validate_paired_networks(networks: list[dict], contrast: str, seed: int) -> None:
+def validate_paired_networks(networks: list[dict], contrast: str, seed: int,
+                            method_contrast: tuple[str, str] | None = None) -> None:
     """Name incompatible fields so a real protocol mismatch remains actionable."""
     fields = ("duration_seconds", "evaluation_interval_seconds", "evaluation_split",
               "training_indices_sha256", "validation_indices_sha256")
     mismatches = {key for key in fields if len({s.get(key) for s in networks}) > 1}
     protocols = [s.get("pairing_protocol", {}) for s in networks]
+    intentional = set()
+    if method_contrast is not None:
+        allowed = {("M4", "M3"), *((method, "M0") for method in ("M1", "M2", "M3", "M4"))}
+        if method_contrast not in allowed or tuple(s.get("method", "M0") for s in networks) != method_contrast:
+            raise ValueError("unsupported or mismatched method contrast")
+        if len({s.get("scenario") for s in networks}) != 1:
+            mismatches.add("scenario")
+        if method_contrast == ("M4", "M3"):
+            k = [s.get("method_parameters", {}).get("rejoin_batches") for s in networks]
+            if None in k or len(set(k)) != 1:
+                mismatches.add("rejoin_batches")
+        intentional = {"method", "method_parameters"}
     for key in set().union(*(p.keys() for p in protocols)):
-        if len({json_sha256(p.get(key)) for p in protocols}) > 1:
+        if key not in intentional and len({json_sha256(p.get(key)) for p in protocols}) > 1:
             mismatches.add(key)
     # Retain strict checking if a caller provides only precomputed fingerprints.
-    if len({s.get("protocol_sha256") for s in networks}) > 1 and not mismatches:
+    if method_contrast is None and len({s.get("protocol_sha256") for s in networks}) > 1 and not mismatches:
         mismatches.add("protocol_sha256")
     if mismatches:
         runs = ", ".join(s["run_id"] for s in networks)
@@ -295,6 +308,7 @@ def summarize_run(directory):
         individual_recovery.append({"client_id": client, "returned": client in spec["offline_client_ids"],
                                     "recovery_seconds": recovery, "recovered": recovery is not None})
     summary = {"run_id": spec["run_id"], "dataset": spec["dataset"], "scenario": spec["scenario"],
+               "method": spec.get("method", "M0"), "method_parameters": spec.get("method_parameters", {}),
                "seed": spec["seed"], "mode": spec["mode"], "duration_seconds": duration,
                "evaluation_interval_seconds": interval, "evaluation_split": spec["evaluation_split"],
                "training_indices_sha256": distributions[0]["training_indices_sha256"],
@@ -310,6 +324,11 @@ def summarize_run(directory):
                "communication_seconds": sum(c["communication_seconds"] for c in costs),
                "peak_process_memory_bytes": [c["peak_process_memory_bytes"] for c in costs],
                "actual_tracked_fraction_in_r": [float(counts[[0, 4], c].sum() / counts[:, c].sum()) for c in (3, 8)]}
+    for key in ("reintegration_optimizer_steps", "reintegration_examples", "reintegration_train_seconds",
+                "teacher_inferences", "teacher_examples", "teacher_seconds", "reintegration_wait_seconds",
+                "discarded_optimizer_steps", "discarded_examples", "diagnostic_snapshot_bytes_peak", "teacher_model_bytes"):
+        summary[key] = sum(c.get(key, 0) for c in costs)
+    summary["reintegration_completed_clients"] = sum(bool(c.get("reintegration_completed")) for c in costs)
     protocol = pairing_protocol(directory, spec)
     summary["pairing_protocol"] = protocol
     summary["protocol_sha256"] = json_sha256(protocol)
@@ -384,18 +403,25 @@ def summarize_collection(root: Path, run_id: str | None = None, mode: str | None
     rows = []
     lookup = {}
     for summary in summaries:
-        key = (summary["dataset"], summary["mode"], summary["scenario"], summary["seed"])
+        summary.setdefault("method", "M0")
+        summary.setdefault("method_parameters", {})
+        summary["method_configuration"] = json_sha256(summary["method_parameters"])
+        key = (summary["dataset"], summary["mode"], summary["method"], summary["method_configuration"], summary["scenario"], summary["seed"])
         if key in lookup:
             raise ValueError(f"duplicate network repetition: {key}; choose a narrower collection root")
         lookup[key] = summary
         for outcome in summary["outcomes"]:
-            rows.append({**{k: summary[k] for k in ("dataset", "mode", "scenario", "seed", "run_id")},
+            rows.append({**{k: summary[k] for k in ("dataset", "mode", "method", "method_configuration", "scenario", "seed", "run_id")},
                          **outcome, "model_bytes_received": summary["model_bytes_received"],
                          "optimizer_steps": summary["optimizer_steps"], "train_seconds": summary["train_seconds"],
-                         "evaluation_seconds": summary["evaluation_seconds"]})
+                         "evaluation_seconds": summary["evaluation_seconds"],
+                         **{key: summary.get(key, 0) for key in ("reintegration_optimizer_steps", "reintegration_examples",
+                            "teacher_inferences", "teacher_seconds", "reintegration_wait_seconds",
+                            "discarded_optimizer_steps", "discarded_examples")}})
     write_csv(root / "collection.csv", rows)
     comparisons = []
-    for dataset, mode in sorted({(s["dataset"], s["mode"]) for s in summaries}):
+    incompatible_method_pairs = []
+    for dataset, mode, method, configuration in sorted({(s["dataset"], s["mode"], s["method"], s["method_configuration"]) for s in summaries}):
         contrasts = {"concentrated_r_minus_c": [("concentrated-r", "online", 1), ("concentrated-c", "online", -1)],
                      "distributed_r_minus_c": [("distributed-r", "online", 1), ("distributed-c", "online", -1)],
                      "concentration_x_absence": [("concentrated-r", "online", 1), ("concentrated-c", "online", -1),
@@ -406,9 +432,10 @@ def summarize_collection(root: Path, run_id: str | None = None, mode: str | None
                     (f"{distribution}-{agenda}", "online", 1), (f"{distribution}-none", f"without_{agenda}", -1)]
         for name, terms in contrasts.items():
             differences, used_seeds = [], []
-            candidates = sorted({s["seed"] for s in summaries if s["dataset"] == dataset and s["mode"] == mode})
+            candidates = sorted({s["seed"] for s in summaries if s["dataset"] == dataset and s["mode"] == mode
+                                 and s["method"] == method and s["method_configuration"] == configuration})
             for seed in candidates:
-                networks = [lookup.get((dataset, mode, scenario, seed)) for scenario, _, _ in terms]
+                networks = [lookup.get((dataset, mode, method, configuration, scenario, seed)) for scenario, _, _ in terms]
                 if any(s is None for s in networks):
                     continue
                 validate_paired_networks(networks, name, seed)
@@ -419,23 +446,68 @@ def summarize_collection(root: Path, run_id: str | None = None, mode: str | None
                 differences.append(sum(v * term[2] for v, term in zip(values, terms)))
                 used_seeds.append(seed)
             low, high = paired_bootstrap(differences)
-            comparisons.append({"dataset": dataset, "mode": mode, "contrast": name, "paired_networks": len(differences),
+            comparisons.append({"dataset": dataset, "mode": mode, "method": method, "method_configuration": configuration,
+                                "contrast": name, "paired_networks": len(differences),
                                 "seeds": ",".join(map(str, used_seeds)),
                                 "mean_difference": float(np.mean(differences)) if differences else None,
                                 "ci95_low": low, "ci95_high": high})
+    # Distinct configurations are never pooled. Each configured method is paired
+    # against the baseline, and M4 against M3 with an identical student budget.
+    for left_method, right_method in [(m, "M0") for m in ("M1", "M2", "M3", "M4")] + [("M4", "M3")]:
+        groups = sorted({(s["dataset"], s["mode"], s["scenario"]) for s in summaries
+                         if s["method"] == left_method})
+        for dataset, mode, scenario in groups:
+            if (left_method, right_method) == ("M4", "M3") and scenario != "concentrated-r":
+                continue
+            configs = {m: sorted({s["method_configuration"] for s in summaries if s["dataset"] == dataset
+                                  and s["mode"] == mode and s["scenario"] == scenario and s["method"] == m})
+                       for m in (left_method, right_method)}
+            for left_config in configs[left_method]:
+                for right_config in configs[right_method]:
+                    differences, used_seeds = [], []
+                    candidates = sorted({s["seed"] for s in summaries if s["dataset"] == dataset and s["mode"] == mode})
+                    for seed in candidates:
+                        networks = [lookup.get((dataset, mode, m, c, scenario, seed)) for m, c in (
+                            (left_method, left_config), (right_method, right_config))]
+                        if any(s is None for s in networks):
+                            continue
+                        name = f"{left_method}_minus_{right_method}/{scenario}"
+                        if (left_method, right_method) == ("M4", "M3") and (
+                            networks[0]["method_parameters"].get("rejoin_batches") !=
+                            networks[1]["method_parameters"].get("rejoin_batches")
+                        ):
+                            incompatible_method_pairs.append({"dataset": dataset, "mode": mode,
+                                "scenario": scenario, "seed": seed, "left_configuration": left_config,
+                                "right_configuration": right_config, "reason": "rejoin_batches_mismatch"})
+                            continue
+                        validate_paired_networks(networks, name, seed, (left_method, right_method))
+                        selection = "without_r" if scenario.endswith("none") else "online"
+                        values = [next(r["post_return_auc"] for r in s["outcomes"] if r["selection"] == selection) for s in networks]
+                        if any(v is None for v in values):
+                            continue
+                        differences.append(values[0] - values[1])
+                        used_seeds.append(seed)
+                    low, high = paired_bootstrap(differences)
+                    comparisons.append({"dataset": dataset, "mode": mode, "method": f"{left_method}-{right_method}",
+                                        "method_configuration": f"{left_config}/{right_config}",
+                                        "contrast": f"{left_method}_minus_{right_method}/{scenario}",
+                                        "paired_networks": len(differences), "seeds": ",".join(map(str, used_seeds)),
+                                        "mean_difference": float(np.mean(differences)) if differences else None,
+                                        "ci95_low": low, "ci95_high": high})
     write_csv(root / "paired_comparisons.csv", comparisons)
+    write_json(root / "incompatible_method_pairs.json", incompatible_method_pairs)
     def outcome_plot(axis):
         for dataset, mode in sorted({(r["dataset"], r["mode"]) for r in rows}):
             eligible = [r for r in rows if r["dataset"] == dataset and r["mode"] == mode and r["post_return_auc"] is not None]
-            axis.scatter([f"{dataset}\n{mode}\n{r['scenario']}\n{r['selection']}" for r in eligible],
+            axis.scatter([f"{dataset}\n{mode}/{r['method']}/{r['method_configuration'][:6]}\n{r['scenario']}\n{r['selection']}" for r in eligible],
                          [r["post_return_auc"] for r in eligible], label=f"{dataset}/{mode}")
         axis.tick_params(axis="x", labelsize=6)
     _figure(root / "post_return_outcomes.png", outcome_plot, "Desfecho por execução completa", "AUC normalizada")
-    for cost in ("model_bytes_received", "optimizer_steps", "train_seconds"):
+    for cost in ("model_bytes_received", "optimizer_steps", "train_seconds", "teacher_seconds"):
         def draw(axis):
-            for row in rows:
-                if row["post_return_auc"] is not None:
-                    axis.scatter(row[cost], row["post_return_auc"])
+            for method in sorted({row["method"] for row in rows}):
+                selected = [row for row in rows if row["method"] == method and row["post_return_auc"] is not None]
+                axis.scatter([row[cost] for row in selected], [row["post_return_auc"] for row in selected], label=method)
             axis.set_xlabel(cost)
         _figure(root / f"quality_vs_{cost}.png", draw, "Qualidade versus custo", "AUC normalizada")
     valid = [r for r in comparisons if r["mean_difference"] is not None]
@@ -446,14 +518,14 @@ def summarize_collection(root: Path, run_id: str | None = None, mode: str | None
             if row["ci95_low"] is not None:
                 axis.plot([row["ci95_low"], row["ci95_high"]], [i, i], color="tab:blue")
             axis.scatter(mean, i, color="tab:blue")
-        axis.set_yticks(range(len(valid)), [f"{r['dataset']}/{r['mode']}/{r['contrast']} (n={r['paired_networks']})" for r in valid], fontsize=7)
+        axis.set_yticks(range(len(valid)), [f"{r['dataset']}/{r['mode']}/{r['method']}/{r['method_configuration'][:6]}/{r['contrast']} (n={r['paired_networks']})" for r in valid], fontsize=7)
         axis.axvline(0, color="gray", linestyle="--")
         axis.set_xlabel("Diferença pareada de AUC; intervalo bootstrap de 95%")
         figure.tight_layout()
         figure.savefig(root / "paired_contrasts.png", dpi=150)
         plt.close(figure)
     (root / "collection.md").write_text(
-        f"# Coleção M0\n\n{len(summaries)} redes completas; {len(failed)} execuções não concluídas ou não executadas.\n\n"
+        f"# Coleção Johann M0–M4\n\n{len(summaries)} redes completas; {len(failed)} execuções não concluídas ou não executadas.\n\n"
         "Contrastes em paired_comparisons.csv usam diferenças pareadas por semente. "
         "IC ausente com menos de duas redes; pilotos e coleta são analisados separadamente. "
         "Desfechos incompletos permanecem na tabela, mas não alimentam contrastes.\n", encoding="utf-8")

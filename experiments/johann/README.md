@@ -1,11 +1,53 @@
-# Baseline M0: clientes offline e reintegração
+# Johann M0–M4: clientes offline e reintegração
+
+M0 continua sendo o padrão. `--methods M0 M1 M2 M3 M4` seleciona métodos adicionais:
+M1 usa idade, M2 limited merging, M3 substituição e adaptação no retorno, e M4
+a mesma janela com destilação. Idade conta **visitas a exemplos**, incluindo
+reapresentações; é separada de passos locais e publicações. As referências,
+equações, adaptações e limites de novidade estão em
+[implementacao_M1_M4_referencias_e_contribuicoes.md](../../outputs/tcc/implementacao_M1_M4_referencias_e_contribuicoes.md).
+
+Os manifests fixam 600 s/20 s no MNIST e 1.800 s/60 s no CIFAR-10.
+Os parâmetros dos métodos ainda são valores de desenvolvimento, com
+`protocol_frozen=false`. A coleta confirmatória depende da calibração e do
+congelamento. Comandos de desenvolvimento, executados da raiz:
+
+```powershell
+& $py $runner smoke --dataset all --methods M1 M2 M3 M4 --run-id smoke-metodos
+& $py $runner calibrate --dataset all --run-id busca-validacao
+& $py $runner select-calibration results/johann --run-id busca-validacao
+& $py $runner pilot --dataset all --methods M0 M1 M2 M3 M4 --scenario concentrated-r --seeds 8 9 --selected-config results/johann/busca-validacao-selection.json --run-id confirmacao-validacao
+```
+
+Defina `$py` e `$runner` conforme a preparação abaixo. `calibrate --render-only`
+permite inspecionar toda a grade sem Docker. O seletor exige os onze candidatos
+completos por dataset, usa somente validação/semente 7 e não congela o protocolo
+automaticamente. As sementes 8/9 confirmam a escolha; 42–46 ficam para coleta.
+Overrides: `--merge-limit-examples` ou `--merge-limit-multiplier` (M2),
+`--rejoin-batches` (M3/M4), `--distillation-weight` e
+`--distillation-temperature` (M4). Cada configuração deve usar um run-id próprio.
+
+Se Docker estiver indisponível, `smoke --backend local` inicia oito processos
+Python com HTTP real e encerra apenas os processos criados pelo executor.
+Esse backend é exclusivo de smoke/validação, registra `execution_backend=local_smoke`
+e não deve ser usado para conclusões científicas ou misturado a execuções Docker.
+Por exemplo: `smoke --backend local --dataset all --methods M1 M2 M3 M4
+--rejoin-batches 2 --duration 45 --run-id verificacao-local`.
+
+M3/M4 descartam o ciclo privado suspenso e inicializam pelo vizinho de maior
+idade, mesmo se inferior à idade preservada. Sem vizinho elegível, aguardam dentro
+do orçamento. Copiam após consultas feitas no retorno e publicam uma vez,
+depois de K minibatches. O professor de M4 fica congelado e usa somente o treino
+local. Sem ausência, ambos percorrem M0. Diagnósticos são avaliados após o orçamento.
+Na intervenção, pesos convexos de parâmetros ficam ausentes, pois não representam
+o treinamento nem a destilação.
 
 Este experimento investiga se a ausência de clientes que concentram determinadas
 classes afeta o reconhecimento dessas classes nos clientes que continuam online.
 Há configurações para **MNIST e CIFAR-10**, com oito clientes e treinamento em CPU.
-Os tempos são parâmetros iniciais de piloto, não uma calibração científica concluída.
+Os tempos/cadências foram calibrados para M0; M1–M4 ainda exigem calibração dos parâmetros.
 
-## Método e cenários
+## M0 e cenários compartilhados
 
 M0 combina o modelo treinado localmente com os snapshots disponíveis dos vizinhos,
 ponderando cada um pelo número de exemplos de treinamento do emissor:
@@ -112,7 +154,7 @@ Gerar Compose e a configuração resolvida, sem iniciar contêineres:
 
 ```powershell
 & $py $runner render-compose --dataset mnist --scenario concentrated-r --run-id inspecao-01
-docker compose -f results/johann/mnist/concentrated-r/inspecao-01-s7/compose.json config --quiet
+docker compose -f results/johann/mnist/M0/concentrated-r/inspecao-01-s7/compose.json config --quiet
 ```
 
 Cada diretório é exclusivo e não pode ser sobrescrito. Use outro `--run-id` para
@@ -156,7 +198,7 @@ uma thread PyTorch por cliente e as mesmas CNNs/normalizações dos experimentos
 ## Resultados, métricas e gráficos
 
 ```text
-results/johann/<dataset>/<cenario>/<run_id>-s<semente>/
+results/johann/<dataset>/<metodo>/<cenario>/<run_id>-s<semente>/
   compose.json, resolved_experiment.json, schedule.json
   image.json, container_dependencies.txt, working_tree.patch
   client_<id>_metrics.jsonl       Ciclos publicados e participantes
@@ -177,7 +219,7 @@ fonte. A imagem tem sua identificação registrada; dependências do contêiner 
 são exportadas. Não publique datasets, checkpoints ou resultados no Git.
 
 As avaliações usam snapshots publicados em uma thread observadora, fora do lock
-do modelo. A cadência inicial é dez segundos no MNIST e trinta no CIFAR-10, com
+do modelo. A cadência é vinte segundos no MNIST e sessenta no CIFAR-10, com
 instantes reais de captura registrados. Pontos atrasados são pulados, sem rajadas
 de avaliações compensatórias. Durante a ausência, métricas de um snapshot já
 avaliado podem ser reutilizadas com `frozen=true`. O custo da observação compete
@@ -193,10 +235,11 @@ Cada resumo também gera `charts/client_<id>_recall_by_class.png` e CSV, com uma
 curva por classe, eixo Y entre 0 e 1 e os tempos reais das avaliações periódicas
 e final. Suporte zero aparece como lacuna; as avaliações de diagnóstico não entram
 nessas curvas. A cadência de observação permanece igual.
-`charts/client_<id>_aggregation_contributions.png` e CSV mostram os pesos diretos
-normalizados do FedAvg por cliente e ciclo publicado, incluindo o modelo local;
+`charts/client_<id>_aggregation_contributions.png` e CSV mostram os pesos efetivos
+das combinações de parâmetros por cliente e ciclo publicado, incluindo o modelo local;
 cada coluna conhecida soma 100%. A escala de cores é sempre 0–100%, e ciclos sem
-registro ficam cinza. Não é uma atribuição histórica de conhecimento.
+registro ficam cinza. Não é uma atribuição histórica de conhecimento. A intervenção
+M3/M4 fica sem pesos, pois treino e destilação não são uma combinação convexa direta.
 
 A propagação de `/start` tenta novamente em segundo plano enquanto o serviço
 estiver ativo, mesmo após o treino local. Um vizinho que receber o início tarde
@@ -227,7 +270,7 @@ sem essa informação, o valor é ausente, nunca zero presumido.
 Regenerar resumos e analisar uma coleção:
 
 ```powershell
-& $py $runner summarize results/johann/mnist/concentrated-r/coleta-01-s42
+& $py $runner summarize results/johann/mnist/M0/concentrated-r/coleta-01-s42
 & $py $runner summarize results/johann --run-id coleta-01 --mode collection
 ```
 
@@ -265,19 +308,22 @@ Uma falha não deve ser substituída silenciosamente: preserve a pasta e identif
 uma nova execução com outro `--run-id`.
 
 ```powershell
-Get-Content results/johann/mnist/concentrated-r/smoke-01-s7/outcome.json
-Get-Content results/johann/mnist/concentrated-r/smoke-01-s7/container.log -Tail 80
-docker compose -f results/johann/mnist/concentrated-r/smoke-01-s7/compose.json ps -a
-docker compose -f results/johann/mnist/concentrated-r/smoke-01-s7/compose.json down
+Get-Content results/johann/mnist/M0/concentrated-r/smoke-01-s7/outcome.json
+Get-Content results/johann/mnist/M0/concentrated-r/smoke-01-s7/container.log -Tail 80
+docker compose -f results/johann/mnist/M0/concentrated-r/smoke-01-s7/compose.json ps -a
+docker compose -f results/johann/mnist/M0/concentrated-r/smoke-01-s7/compose.json down
 ```
 
 Os experimentos antigos continuam usando limite por rodadas e seu contrato de
 treinador original. O modo temporal exige as capacidades opcionais
 `train_local_controlled` e `evaluate_detailed`. Suas variáveis principais são
+`METHOD`, `MERGE_LIMIT_EXAMPLES`, `REJOIN_BATCHES`, `DISTILLATION_WEIGHT`,
+`DISTILLATION_TEMPERATURE`,
 `RUN_DURATION_SECONDS`, `EVALUATION_INTERVAL_SECONDS`, `OFFLINE_CLIENT_IDS`,
 `OFFLINE_START_FRACTION`, `OFFLINE_END_FRACTION`, `AUTO_START_HEAD`,
 `JOHANN_DISTRIBUTION` e `EVALUATION_SPLIT`. `/start` aceita `start_at` como timestamp
 Unix em segundos; repetir o mesmo identificador com outro instante gera conflito.
+M3/M4 exigem também a capacidade opcional `train_reintegration` do treinador.
 
 ## Verificação
 

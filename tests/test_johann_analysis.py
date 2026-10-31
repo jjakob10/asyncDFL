@@ -243,3 +243,43 @@ def test_collection_pairs_different_image_ids_with_identical_runtime_contents(tm
     contrast = next(row for row in comparisons if row["contrast"] == "concentrated_r_minus_none")
     assert contrast["paired_networks"] == 1
     assert contrast["mean_difference"] == pytest.approx(.2)
+
+
+def test_method_pairing_allows_only_declared_differences_and_requires_shared_k(tmp_path):
+    networks = []
+    for method in ("M4", "M3"):
+        spec = load_spec("mnist", "concentrated-r", seed=8, method=method)
+        protocol = pairing_protocol(tmp_path, spec)
+        networks.append({"run_id": method, "scenario": "concentrated-r", "method": method,
+                         "method_parameters": spec["method_parameters"], "pairing_protocol": protocol,
+                         "protocol_sha256": json_sha256(protocol)})
+    validate_paired_networks(networks, "M4_minus_M3", 8, ("M4", "M3"))
+    with pytest.raises(ValueError, match="method"):
+        validate_paired_networks(networks, "within_method", 8)
+    different = deepcopy(networks)
+    different[1]["method_parameters"]["rejoin_batches"] = 64
+    with pytest.raises(ValueError, match="rejoin_batches"):
+        validate_paired_networks(different, "M4_minus_M3", 8, ("M4", "M3"))
+    different = deepcopy(networks)
+    different[1]["pairing_protocol"]["learning_rate"] = .2
+    with pytest.raises(ValueError, match="learning_rate"):
+        validate_paired_networks(different, "M4_minus_M3", 8, ("M4", "M3"))
+
+
+def test_collection_compares_m4_and_m3_instead_of_treating_them_as_duplicates(tmp_path, monkeypatch):
+    from experiments.johann import analysis
+
+    monkeypatch.setattr(analysis, "_figure", lambda *args, **kw: None)
+    for method, quality in (("M3", .6), ("M4", .8)):
+        for seed in (8, 9):
+            directory = write_network(tmp_path / method, seed=seed, quality=quality, mode="pilot")
+            spec_path = directory / "resolved_experiment.json"
+            spec = json.loads(spec_path.read_text())
+            updated = load_spec("mnist", "concentrated-r", seed, 10, 1, "pilot", method)
+            spec.update(updated)
+            spec_path.write_text(json.dumps(spec))
+    comparisons = summarize_collection(tmp_path)
+    contrast = next(row for row in comparisons if row["contrast"] == "M4_minus_M3/concentrated-r")
+    assert contrast["paired_networks"] == 2
+    assert contrast["mean_difference"] == pytest.approx(.2)
+    assert (contrast["ci95_low"], contrast["ci95_high"]) == pytest.approx((.2, .2))

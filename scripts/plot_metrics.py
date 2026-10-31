@@ -198,6 +198,23 @@ def _positive_weight(value: Any, location: str) -> float:
 
 
 def _aggregation_weights(record: dict, location: str) -> dict[int, float] | None:
+    if "effective_aggregation_weights" in record:
+        raw = record["effective_aggregation_weights"]
+        # Supervised/KD adaptation is not a convex mixture of the inputs.
+        if raw is None:
+            return None
+        if not isinstance(raw, dict) or not raw:
+            raise MetricsPlotError(f"{location}: invalid effective aggregation weights")
+        weights = {}
+        for client, value in raw.items():
+            if (not isinstance(client, str) or not client.isascii() or not client.isdigit()
+                    or int(client) in weights or isinstance(value, bool)
+                    or not isinstance(value, (float, int)) or not math.isfinite(value) or value < 0):
+                raise MetricsPlotError(f"{location}: invalid effective aggregation weight/client")
+            weights[int(client)] = float(value)
+        if not math.isclose(sum(weights.values()), 1, abs_tol=1e-8):
+            raise MetricsPlotError(f"{location}: effective aggregation weights must sum to one")
+        return weights
     peers = record.get("neighbor_versions")
     if peers is None:
         return None
@@ -895,7 +912,7 @@ def plot_contributions(experiment: Experiment, output_dir: Path) -> list[Path]:
         axis.set_xlabel("Round")
         axis.set_ylabel("Contributing client")
         axis.set_title(f"{experiment.label} — Client {client} — Direct aggregation contribution")
-        figure.colorbar(display, ax=axis, label="Normalized FedAvg weight",
+        figure.colorbar(display, ax=axis, label="Effective parameter mixing weight",
                         format=PercentFormatter(xmax=1))
         figure.tight_layout()
         path = output_dir / f"client_{client}_aggregation_contributions.png"
