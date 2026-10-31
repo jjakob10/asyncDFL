@@ -917,6 +917,11 @@ does not embed the approximately 9.35 GB dataset.
 
 ## Development and tests
 
+The six optional simulated-data-collection examples (MNIST, CIFAR-10 and HARTH,
+accumulative and three-round sliding windows) are documented in
+[experiments/thiago-coleta-simulada/README.md](experiments/thiago-coleta-simulada/README.md).
+Existing experiment defaults do not enable this feature.
+
 ```bash
 python -m pip install -r requirements-dev.txt
 python -m compileall -q app experiments tests scripts

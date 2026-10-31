@@ -104,6 +104,10 @@ class Settings:
     rejoin_batches: int = 16
     distillation_weight: float = 0.5
     distillation_temperature: float = 2.0
+    collection_mode: str = "disabled"
+    collection_window_rounds: int = 3
+    collection_schedule_path: str = ""
+    collection_preflight_path: str = ""
 
     @property
     def is_head(self) -> bool:
@@ -190,11 +194,24 @@ class Settings:
             rejoin_batches=int(os.getenv("REJOIN_BATCHES", "16")),
             distillation_weight=float(os.getenv("DISTILLATION_WEIGHT", "0.5")),
             distillation_temperature=float(os.getenv("DISTILLATION_TEMPERATURE", "2")),
+            collection_mode=os.getenv("COLLECTION_MODE", "disabled"),
+            collection_window_rounds=int(os.getenv("COLLECTION_WINDOW_ROUNDS", "3")),
+            collection_schedule_path=os.getenv("COLLECTION_SCHEDULE_PATH", ""),
+            collection_preflight_path=os.getenv("COLLECTION_PREFLIGHT_PATH", ""),
         )
         settings.validate()
         return settings
 
     def validate(self) -> None:
+        if self.collection_mode not in {"disabled", "accumulative", "sliding_window"}:
+            raise ValueError("COLLECTION_MODE must be disabled, accumulative or sliding_window")
+        if self.collection_mode != "disabled":
+            if self.run_duration_seconds != 0:
+                raise ValueError("data collection requires the round-based runtime")
+            if not self.collection_schedule_path:
+                raise ValueError("COLLECTION_SCHEDULE_PATH is required for data collection")
+            if type(self.collection_window_rounds) is not int or self.collection_window_rounds < 1:
+                raise ValueError("COLLECTION_WINDOW_ROUNDS must be a positive integer")
         if self.method not in {"M0", "M1", "M2", "M3", "M4"}:
             raise ValueError("METHOD must be M0, M1, M2, M3 or M4")
         if self.method != "M0" and self.run_duration_seconds <= 0:

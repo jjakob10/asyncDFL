@@ -14,6 +14,7 @@ import httpx
 import torch
 
 from app.config import Settings
+from app.collection import read_json, resolve_plan
 from app.federation import (
     StateDict,
     clone_state_dict,
@@ -43,6 +44,18 @@ class ClientRuntime:
         torch.set_num_threads(settings.torch_num_threads)
         self.trainer = trainer or load_trainer(settings.trainer_module)
         self.data = data or self.trainer.load_data(settings)
+        self.collection = None
+        if settings.collection_mode != "disabled":
+            settings.validate()
+            if self.data.collection_source is None:
+                raise ValueError("trainer must provide collection_source for data collection")
+            self.collection = resolve_plan(
+                read_json(settings.collection_schedule_path), self.data.collection_source, settings)
+            if settings.collection_preflight_path:
+                expected = read_json(settings.collection_preflight_path)
+                if expected.get("clients", {}).get(str(settings.client_id)) != self.collection.plan_hash:
+                    raise ValueError("collection stock or schedule differs from validated preflight")
+        self._published_sample_count = 0 if self.collection else self.data.sample_count
         self.metrics_writer = MetricsWriter(settings.results_dir, settings.client_id)
         self._lock = threading.RLock()
         self._model: StateDict = clone_state_dict(
@@ -103,7 +116,7 @@ class ClientRuntime:
                 "X-Client-ID": str(self.settings.client_id),
                 "X-Model-Version": str(self._model_version),
                 "X-Completed-Round": str(self._completed_round),
-                "X-Sample-Count": str(self.data.sample_count),
+                "X-Sample-Count": str(self._published_sample_count),
             }
         return payload, headers
 
@@ -125,7 +138,7 @@ class ClientRuntime:
                 "current_round": self._completed_round,
                 "total_rounds": self.settings.rounds,
                 "model_version": self._model_version,
-                "sample_count": self.data.sample_count,
+                "sample_count": self._published_sample_count,
                 "neighbors": list(self.settings.neighbors),
                 "started_at": self._started_at,
                 "start_at": self._start_at,
@@ -250,7 +263,7 @@ class ClientRuntime:
             sample_count = int(response.headers["X-Sample-Count"])
             if sample_count < 0:
                 raise ValueError("neighbor returned a negative sample count")
-            aggregation_weight = max(sample_count, 1)
+            aggregation_weight = sample_count if self.collection else max(sample_count, 1)
             metadata = {
                 "url": neighbor,
                 "client_id": int(response.headers["X-Client-ID"]),
@@ -317,34 +330,57 @@ class ClientRuntime:
         try:
             self._save_topology()
             self._save_class_distribution()
+            if self.collection:
+                path = self.metrics_writer.directory / f"client_{self.settings.client_id}_collection_plan.json"
+                temporary = path.with_suffix(".tmp")
+                temporary.write_text(json.dumps({
+                    **self.collection.resolved, "plan_hash": self.collection.plan_hash,
+                    "mode": self.settings.collection_mode,
+                    "window_rounds": self.settings.collection_window_rounds,
+                }, allow_nan=False), encoding="utf-8")
+                os.replace(temporary, path)
             if self._start_monotonic is not None:
                 time.sleep(max(0, self._start_monotonic - time.monotonic()))
             for round_number in range(1, self.settings.rounds + 1):
                 with self._lock:
                     base_state = clone_state_dict(self._model)
                     error_cursor = len(self._errors)
-                if self.data.train_loader is None or self.data.sample_count == 0:
+                train_loader, sample_count = self.data.train_loader, self.data.sample_count
+                collection_metrics = None
+                if self.collection:
+                    train_loader, collection_metrics, audit = self.collection.round_data(
+                        round_number, self.settings)
+                    sample_count = collection_metrics["active"]["count"]
+                    audit.update(client_id=self.settings.client_id, run_id=self._run_id)
+                    path = self.metrics_writer.directory / f"client_{self.settings.client_id}_collection.jsonl"
+                    with path.open("a", encoding="utf-8") as stream:
+                        stream.write(json.dumps(audit, allow_nan=False) + "\n")
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                if train_loader is None or sample_count == 0:
                     local_state = base_state
                     train_metrics: dict[str, float] = {}
                 else:
                     local_state, train_metrics = self.trainer.train_local(
                         base_state,
-                        self.data.train_loader,
+                        train_loader,
                         self.settings,
                     )
 
-                weighted_states: list[tuple[StateDict, int]] = [
-                    (local_state, max(self.data.sample_count, 1))
-                ]
+                local_weight = sample_count if self.collection else max(sample_count, 1)
+                weighted_states: list[tuple[StateDict, int]] = []
+                if local_weight:
+                    weighted_states.append((local_state, local_weight))
                 neighbor_versions: list[dict[str, Any]] = []
                 for neighbor in self.settings.neighbors:
                     fetched = self._fetch_neighbor(neighbor, local_state)
                     if fetched is not None:
-                        state, sample_count, metadata = fetched
-                        weighted_states.append((state, sample_count))
+                        state, neighbor_weight, metadata = fetched
+                        if neighbor_weight:
+                            weighted_states.append((state, neighbor_weight))
                         neighbor_versions.append(metadata)
 
-                aggregated = fedavg(weighted_states)
+                aggregated = fedavg(weighted_states) if weighted_states else local_state
                 test_metrics = self.trainer.evaluate(
                     aggregated, self.data.test_loader
                 )
@@ -366,17 +402,26 @@ class ClientRuntime:
                     "is_head": self.settings.is_head,
                     "has_local_data": self.settings.has_local_data,
                     "paper_role": self.settings.paper_role,
-                    "sample_count": self.data.sample_count,
-                    "aggregation_weight": max(self.data.sample_count, 1),
+                    "sample_count": sample_count,
+                    "aggregation_weight": local_weight,
                     "neighbor_versions": neighbor_versions,
                     "neighbor_errors": round_errors,
                     "train": train_metrics,
                     "test": test_metrics,
                 }
+                if collection_metrics is not None:
+                    record["collection"] = collection_metrics
+                    total_weight = sum(weight for _, weight in weighted_states)
+                    record["effective_aggregation_weights"] = ({
+                        str(self.settings.client_id): local_weight / total_weight,
+                        **{str(peer["client_id"]): peer["aggregation_weight"] / total_weight
+                           for peer in neighbor_versions},
+                    } if total_weight else None)
                 with self._lock:
                     self._model = clone_state_dict(aggregated)
                     self._model_version += 1
                     self._completed_round = round_number
+                    self._published_sample_count = sample_count
                     record["model_version"] = self._model_version
                     self._latest_metrics = record
                 self.metrics_writer.append(record)
@@ -387,7 +432,8 @@ class ClientRuntime:
                     self.settings.rounds,
                     train_metrics.get("loss", float("nan")),
                     test_metrics["accuracy"],
-                    len(weighted_states) - 1,
+                    (sum(peer["aggregation_weight"] > 0 for peer in neighbor_versions)
+                     if self.collection else len(weighted_states) - 1),
                 )
 
             self._save_final_model()

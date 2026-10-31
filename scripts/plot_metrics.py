@@ -154,7 +154,8 @@ def load_metrics_file(path: Path, expected_client_id: int,
                     neighbor_count=_neighbor_count(raw_record, location),
                     aggregation_weights=_aggregation_weights(raw_record, location),
                     aggregation_weight=(
-                        _positive_weight(raw_record["aggregation_weight"], location)
+                        _positive_weight(raw_record["aggregation_weight"], location,
+                                         allow_zero="collection" in raw_record)
                         if "aggregation_weight" in raw_record else None
                     ),
                     neighbor_versions=(tuple(dict(peer) for peer in raw_record["neighbor_versions"])
@@ -190,9 +191,9 @@ def _neighbor_count(record: dict, location: str) -> int | None:
     return None
 
 
-def _positive_weight(value: Any, location: str) -> float:
+def _positive_weight(value: Any, location: str, allow_zero: bool = False) -> float:
     if (isinstance(value, bool) or not isinstance(value, (int, float))
-            or not math.isfinite(value) or value <= 0):
+            or not math.isfinite(value) or value < 0 or (value == 0 and not allow_zero)):
         raise MetricsPlotError(f"{location}: invalid aggregation weight")
     return float(value)
 
