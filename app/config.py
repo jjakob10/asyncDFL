@@ -99,6 +99,11 @@ class Settings:
     auto_start_head: bool = True
     johann_distribution: str = "distributed"
     evaluation_split: str = "validation"
+    method: str = "M0"
+    merge_limit_examples: int = 6750
+    rejoin_batches: int = 16
+    distillation_weight: float = 0.5
+    distillation_temperature: float = 2.0
 
     @property
     def is_head(self) -> bool:
@@ -180,11 +185,28 @@ class Settings:
             auto_start_head=_env_bool("AUTO_START_HEAD", True),
             johann_distribution=os.getenv("JOHANN_DISTRIBUTION", "distributed"),
             evaluation_split=os.getenv("EVALUATION_SPLIT", "validation"),
+            method=os.getenv("METHOD", "M0"),
+            merge_limit_examples=int(os.getenv("MERGE_LIMIT_EXAMPLES", "6750")),
+            rejoin_batches=int(os.getenv("REJOIN_BATCHES", "16")),
+            distillation_weight=float(os.getenv("DISTILLATION_WEIGHT", "0.5")),
+            distillation_temperature=float(os.getenv("DISTILLATION_TEMPERATURE", "2")),
         )
         settings.validate()
         return settings
 
     def validate(self) -> None:
+        if self.method not in {"M0", "M1", "M2", "M3", "M4"}:
+            raise ValueError("METHOD must be M0, M1, M2, M3 or M4")
+        if self.method != "M0" and self.run_duration_seconds <= 0:
+            raise ValueError("M1-M4 require the timed runtime")
+        if type(self.merge_limit_examples) is not int or self.merge_limit_examples < 0:
+            raise ValueError("MERGE_LIMIT_EXAMPLES must be a nonnegative integer")
+        if type(self.rejoin_batches) is not int or self.rejoin_batches < 1:
+            raise ValueError("REJOIN_BATCHES must be a positive integer")
+        if not math.isfinite(self.distillation_weight) or self.distillation_weight < 0:
+            raise ValueError("DISTILLATION_WEIGHT must be finite and nonnegative")
+        if not math.isfinite(self.distillation_temperature) or self.distillation_temperature <= 0:
+            raise ValueError("DISTILLATION_TEMPERATURE must be finite and positive")
         if not math.isfinite(self.run_duration_seconds) or self.run_duration_seconds < 0:
             raise ValueError("RUN_DURATION_SECONDS must be finite and nonnegative")
         if not math.isfinite(self.evaluation_interval_seconds) or self.evaluation_interval_seconds <= 0:

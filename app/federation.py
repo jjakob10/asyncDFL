@@ -23,7 +23,7 @@ def validate_compatible(reference: Mapping[str, torch.Tensor], candidate: Mappin
             raise ValueError(f"dtype mismatch for parameter {name}")
 
 
-def fedavg(weighted_states: Sequence[tuple[Mapping[str, torch.Tensor], int]]) -> StateDict:
+def fedavg(weighted_states: Sequence[tuple[Mapping[str, torch.Tensor], float]]) -> StateDict:
     if not weighted_states:
         raise ValueError("FedAvg requires at least one model")
     if any(weight <= 0 for _, weight in weighted_states):

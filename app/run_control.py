@@ -10,6 +10,10 @@ class BudgetExpired(Exception):
     """The current unpublished cycle must be discarded."""
 
 
+class ReintegrationRequired(Exception):
+    """Discard the suspended private cycle before the one-time rejoin policy."""
+
+
 class RunControl:
     def __init__(self, start: float, duration: float, offline: bool,
                  start_fraction: float = 0.3, end_fraction: float = 0.6,
@@ -25,6 +29,14 @@ class RunControl:
         self._transition_lock = threading.RLock()
         self.steps = self.examples = 0
         self.train_seconds = 0.0
+        self.require_reintegration = False
+        self.reintegration_handled = False
+        self.reintegration_active = False
+        self.reintegration_steps = self.reintegration_examples = 0
+        self.reintegration_seconds = 0.0
+        self.teacher_inferences = self.teacher_examples = 0
+        self.teacher_seconds = 0.0
+        self.teacher_model_bytes = 0
 
     @property
     def elapsed(self) -> float:
@@ -58,6 +70,9 @@ class RunControl:
             if self.online:
                 if paused:
                     self.emit("training_resumed")
+                if (self.require_reintegration and self.offline and t >= self.return_at
+                        and not self.reintegration_handled):
+                    raise ReintegrationRequired()
                 return
             if t >= 0 and not paused:
                 paused = True
@@ -70,11 +85,28 @@ class RunControl:
             self.steps += 1
             self.examples += examples
             self.train_seconds += seconds
+            if self.reintegration_active:
+                self.reintegration_steps += 1
+                self.reintegration_examples += examples
+                self.reintegration_seconds += seconds
+
+    def teacher_finished(self, examples: int, seconds: float) -> None:
+        with self._lock:
+            self.teacher_inferences += 1
+            self.teacher_examples += examples
+            self.teacher_seconds += seconds
 
     def counters(self) -> dict:
         with self._lock:
             return {"optimizer_steps": self.steps, "examples_processed": self.examples,
-                    "train_seconds": self.train_seconds}
+                    "train_seconds": self.train_seconds,
+                    "reintegration_optimizer_steps": self.reintegration_steps,
+                    "reintegration_examples": self.reintegration_examples,
+                    "reintegration_train_seconds": self.reintegration_seconds,
+                    "teacher_inferences": self.teacher_inferences,
+                    "teacher_examples": self.teacher_examples,
+                    "teacher_seconds": self.teacher_seconds,
+                    "teacher_model_bytes": self.teacher_model_bytes}
 
     def request_timeout(self, configured: float) -> float:
         self.checkpoint()

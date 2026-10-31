@@ -9,7 +9,7 @@ from scripts import run_johann_experiments as runner
 def test_prepare_refuses_overwrite_and_records_reproducibility(tmp_path):
     spec = load_spec("mnist", "concentrated-r")
     directory, resolved = runner.prepare(spec, "test", tmp_path)
-    assert directory == tmp_path / "mnist" / "concentrated-r" / "test-s7"
+    assert directory == tmp_path / "mnist" / "M0" / "concentrated-r" / "test-s7"
     assert resolved["code_revision"]
     assert resolved["source_sha256"]["app/runtime.py"]
     compose = json.loads((directory / "compose.json").read_text())

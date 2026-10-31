@@ -13,3 +13,7 @@ def train_local_controlled(base, loader, settings, control):
 
 def evaluate_detailed(state, loader):
     return shared.evaluate_detailed(state, loader, "cifar10")
+
+
+def train_reintegration(base, previous, loader, settings, control):
+    return shared.train_reintegration(base, previous, loader, settings, control, "cifar10")

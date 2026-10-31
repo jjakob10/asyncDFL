@@ -4,6 +4,7 @@ param(
     [string]$Scenario = "concentrated-r",
     [switch]$All,
     [int[]]$Seeds,
+    [ValidateSet("M0", "M1", "M2", "M3", "M4")][string[]]$Methods = @("M0"),
     [string]$RunId = (Get-Date -Format "yyyyMMdd-HHmmss")
 )
 
@@ -15,6 +16,7 @@ if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
     throw "Crie .venv e instale requirements-dev.txt antes de executar."
 }
 $arguments = @($runner, $Mode, "--dataset", $Dataset, "--run-id", $RunId)
+$arguments += "--methods"; $arguments += $Methods
 if ($All) { $arguments += "--all" } else { $arguments += @("--scenario", $Scenario) }
 if ($Seeds) { $arguments += "--seeds"; $arguments += $Seeds }
 Push-Location -LiteralPath $repo

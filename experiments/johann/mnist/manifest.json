@@ -1,7 +1,9 @@
 {
   "dataset": "mnist",
   "duration_seconds": 600,
-  "evaluation_interval_seconds": 10,
+  "evaluation_interval_seconds": 20,
+  "protocol_frozen": false,
+  "methods": {"M0": {}, "M1": {}, "M2": {"merge_limit_multiplier": 1}, "M3": {"rejoin_batches": 16}, "M4": {"rejoin_batches": 16, "distillation_weight": 0.5, "distillation_temperature": 2}},
   "client_count": 8,
   "tracked_classes": [
     3,
