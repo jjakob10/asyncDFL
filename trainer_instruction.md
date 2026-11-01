@@ -87,8 +87,7 @@ The shared `app.training.classification_confusion` helper loads the state into
 a supplied model, runs without gradients, and accumulates counts per batch.
 It uses argmax for multiclass and sigmoid >= 0.5 for binary/multilabel, matching
 the built-in trainers. Use a custom implementation if your prediction rule
-differs. Preserve ECG's exact-match accuracy; its per-diagnosis confusion
-matrices are additional diagnostics.
+differs.
 
 The runtime adds `client_id`, `run_id`, `model_version`, and `time`, then writes
 `client_<id>_confusion.json` atomically. It marks the run completed only after
@@ -109,7 +108,7 @@ For each client, the runtime:
 Consequently:
 
 - `load_data` may establish a dataset-derived model dimension before the first
-  `create_model` call, as the TON_IoT trainer does. Prefer fixed dimensions when
+  `create_model` call. Prefer fixed dimensions when
   possible.
 - Every client and every call to `create_model` must produce the same parameter
   names, shapes, and dtypes. FedAvg rejects incompatible state dictionaries.
@@ -265,14 +264,10 @@ Important data rules:
   client's FedAvg weight when positive. The runtime uses
   `max(sample_count, 1)`, so empty clients retain weight 1 while reporting
   `sample_count=0`.
-- Use `settings.download_data` for dataset download behavior. Containers are
-  expected to run without internet access. MNIST and CIFAR-10 use data
-  downloaded during image construction; ECG and TON_IOT use external data
-  mounted read-only at runtime.
-- The ECG trainer reads HDF5 with `pyfive==1.2.1`; do not add a runtime h5py
-  fallback. Test fixtures are synthetic, versioned, and regenerated with h5py
-  in a separate Linux environment. Validate unsupported HDF5 features and
-  performance against real input files before claiming full dataset support.
+- Use `settings.download_data` for dataset download behavior. Containers run
+  with previously prepared data. The built-in datasets expose the optional
+  `prepare_data(data_dir: Path)` capability for image construction and local
+  preparation through `scripts.experiment_tools.prepare_data`.
 - Use `num_workers=0` unless the experiment has a tested reason to change it;
   this is reliable inside the existing containers.
 - Fit data-dependent preprocessing without test leakage. All clients must
@@ -476,3 +471,33 @@ small train/test caps, and then monitor completion with
 - [ ] Losses and metrics are aggregated per example and returned as Python
       floats.
 - [ ] Unit tests, compile checks, and a small smoke test pass.
+
+## Optional preparation and simulated collection
+
+The four required trainer functions remain unchanged. A trainer may additionally
+expose `prepare_data(data_dir: Path) -> None`; the shared preparation command
+loads the trainer and invokes that function without dataset-specific dispatch:
+
+```powershell
+python -m scripts.experiment_tools.prepare_data --trainer-module experiments.harth.trainer --data-dir results/coleta-data
+```
+
+For collection-enabled experiments, expose `COLLECTION_CLASS_CODES` as a tuple
+of original integer class codes and set `DataBundle.collection_source` to an
+`app.collection.CollectionSource`. Its dataset, labels and unique stable sample
+IDs must refer to the same local stock in the same order. Model targets may use
+encoded indices, while source labels retain original codes. Set `chronological`
+only when the stock is already ordered and cannot be rearranged by class.
+
+Return no collection source when collection is disabled if it would add work to
+ordinary loading. The built-in MNIST/CIFAR-10 trainers follow this opt-in path.
+HARTH exposes its already constructed window source. Keep source IDs, stock
+metadata, partitions and test data deterministic; these establish preflight
+plan hashes. The runtime handles arrivals, retention, zero weights and audit
+records, so trainers do not advance their own collection rounds.
+
+Catalogs, topologies, Compose generation, rendering, lifecycle and reports live
+in `scripts.experiment_tools`. Command modules are entry points and must not
+serve as libraries for other commands. Fixed-data tools and exports require
+explicit manifests and reject collection configurations; use the separate
+collection command for those experiments.

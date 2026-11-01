@@ -5,7 +5,7 @@ param(
 $ErrorActionPreference = "Stop"
 $repo = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\..")).Path
 $python = Join-Path $repo ".venv\Scripts\python.exe"
-$runner = Join-Path $repo "scripts\run_paper_experiments.py"
+$runner = Join-Path $repo "scripts\run_experiments.py"
 $plotter = Join-Path $repo "scripts\plot_metrics.py"
 
 if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {

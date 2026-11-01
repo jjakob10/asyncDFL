@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -8,9 +10,18 @@ from torch import nn
 from torch.utils.data import DataLoader, Dataset, Subset
 from torchvision import datasets, transforms
 
+from app.collection import CollectionSource
 from app.config import Settings
 from app.federation import StateDict
 from app.training import ClassRecall, classification_confusion, class_distribution, DataBundle, make_partitions
+
+
+COLLECTION_CLASS_CODES = tuple(range(10))
+
+
+def prepare_data(data_dir: Path) -> None:
+    datasets.MNIST(str(data_dir), train=True, download=True)
+    datasets.MNIST(str(data_dir), train=False, download=True)
 
 
 class MnistCNN(nn.Module):
@@ -101,10 +112,20 @@ def load_data(settings: Settings) -> DataBundle:
         shuffle=False,
         num_workers=0,
     )
-    return DataBundle(
+    bundle = DataBundle(
         train_loader, test_loader, len(train_subset),
         class_distribution(labels[partitions[settings.client_id]], [str(item) for item in range(10)]),
     )
+    if settings.collection_mode != "disabled":
+        all_targets = np.asarray(train_dataset.targets, dtype=np.int64)
+        bundle.collection_source = CollectionSource(
+            train_subset, all_targets[local_indices],
+            tuple(f"mnist:train:{i}" for i in local_indices),
+            COLLECTION_CLASS_CODES, metadata={
+                "dataset": "mnist", "partition_mode": settings.partition_mode,
+                "targets_sha256": hashlib.sha256(all_targets.tobytes()).hexdigest(),
+            })
+    return bundle
 
 
 def train_local(

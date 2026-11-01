@@ -14,13 +14,14 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from experiments.simulated_collection.catalog import (
-    MANIFEST, CollectionExperiment, client_settings, collection_compose, load_catalog,
+from scripts.experiment_tools.collection import (
+    CollectionExperiment, client_settings, collection_compose, load_catalog,
 )
-from experiments.simulated_collection.validate import validate_stocks
+from scripts.experiment_tools.validation import validate_stocks
 from app.collection import read_json
-from scripts.plot_metrics import load_experiments, plot_metrics
-from scripts.run_paper_experiments import summarize_run, wait_for_completion
+from scripts.experiment_tools.execution import run_compose
+
+MANIFEST = ROOT / "experiments" / "thiago-coleta-simulada" / "manifest.json"
 
 
 def render(experiment: CollectionExperiment, run_id: str, results_root: Path) -> Path:
@@ -51,29 +52,15 @@ def docker_validate(directory: Path) -> None:
                     "build", "client-0"], cwd=ROOT, check=True)
     subprocess.run(["docker", "run", "--rm", "--mount",
                     f"type=bind,source={directory},target=/results", image,
-                    "python", "-m", "experiments.simulated_collection.validate"],
+                    "python", "-m", "scripts.experiment_tools.validation"],
                    cwd=ROOT, check=True)
 
 
 def run_stack(directory: Path, experiment: CollectionExperiment) -> None:
-    base = ["docker", "compose", "-f", str(directory / "compose.json")]
-    try:
-        subprocess.run([*base, "up", "-d", "--no-build"], cwd=ROOT, check=True)
-        if not wait_for_completion(experiment.spec.client_count, poll_interval=2,
-                                   timeout=1200 if experiment.smoke else 86400):
-            raise RuntimeError("one or more collection clients failed")
-        summarize_run(directory)
-        plot_metrics(load_experiments([directory]), directory / "charts",
-                     "round", "both", show_neighbor_count=True)
-        (directory / "outcome.json").write_text(json.dumps({"completed": True}), encoding="utf-8")
-    except Exception as exc:
-        (directory / "outcome.json").write_text(
-            json.dumps({"completed": False, "error": str(exc)}), encoding="utf-8")
-        raise
-    finally:
-        logs = subprocess.run([*base, "logs", "--no-color"], cwd=ROOT, capture_output=True, text=True)
-        (directory / "container.log").write_text(logs.stdout + logs.stderr, encoding="utf-8")
-        subprocess.run([*base, "down"], cwd=ROOT, check=False)
+    result = run_compose(directory / "compose.json", experiment.spec, directory, build=False,
+                         timeout=1200 if experiment.smoke else 86400, poll_interval=2, charts=True)
+    if result:
+        raise RuntimeError("collection experiment failed; see outcome.json and container.log")
 
 
 def main(argv: list[str] | None = None) -> int:

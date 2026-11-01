@@ -11,8 +11,20 @@ from app.config import Settings
 from app.federation import StateDict
 from app.training import ClassRecall, DataBundle, classification_confusion, class_distribution
 from experiments.harth.data import (
-    CLASS_CODES, CLASS_NAMES, HarthWindows, read_metadata, split_participants,
+    CLASS_CODES, CLASS_NAMES, HarthWindows, read_metadata, split_participants, download, prepare,
 )
+
+
+COLLECTION_CLASS_CODES = CLASS_CODES
+
+
+def prepare_data(data_dir: Path) -> None:
+    root = data_dir / "harth"
+    prepared = root / "prepared"
+    if (prepared / "metadata.json").is_file():
+        read_metadata(prepared, verify=True)
+    else:
+        prepare(download(root), prepared)
 
 
 def create_model() -> nn.Module:

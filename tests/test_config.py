@@ -69,7 +69,7 @@ def test_explicit_empty_neighbors_does_not_derive_legacy_ring(monkeypatch) -> No
         ("RUN_ID", "", "RUN_ID"),
     ],
 )
-def test_settings_reject_invalid_paper_identity(
+def test_settings_reject_invalid_experiment_identity(
     monkeypatch, name: str, value: str, message: str
 ) -> None:
     monkeypatch.setenv("CLIENT_ID", "client-0")

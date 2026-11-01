@@ -1,8 +1,10 @@
-# Validação de implementação — 31/10/2026
+# Validação da coleta e reorganização — 31/10/2026
+
+## Implementação original, publicada no commit fa9a4b5
 
 - Suíte completa: `python -m pytest` — **365 testes passaram**. Um aviso de
   depreciação já existente em Starlette/AnyIO.
-- `python -m compileall -q app tests scripts experiments/harth experiments/simulated_collection`
+- `python -m compileall -q app tests scripts experiments`
   e `git diff --check` concluídos sem erros.
 - Os seis Composes normais e os seis Composes de smoke passaram em
   `docker compose -f <compose.json> config --quiet`.
@@ -54,3 +56,41 @@ As evidências estão no diretório ignorado `results/thiago-coleta-simulada/`:
 
 Datasets, resultados e checkpoints não foram adicionados ao Git. Use outro
 `run-id` para repetir a execução, pois diretórios existentes não são sobrescritos.
+
+## Reorganização na branch codex/reorganize-experiments
+
+A implementação original foi publicada em `origin/codex/thiago-experiments`
+antes de criar esta branch. A refatoração extraiu as ferramentas compartilhadas
+para `scripts.experiment_tools`, incorporou a fonte de coleta nos treinadores
+originais de imagem e removeu as famílias aposentadas e seus testes exclusivos.
+Os comandos de dados fixos e de coleta continuam separados. O executor de
+dados fixos agora se chama `run_experiments` e exige um manifesto explícito.
+
+Verificações da reorganização:
+
+- **335 testes passaram**, mantendo a cobertura genérica de métricas,
+  falhas, exportação, coleta e métodos M0–M4 de Johann.
+- Compilação de `app`, `experiments`, `scripts` e `tests`, e verificação do diff,
+  sem erros. Não restam imports ou comandos para os módulos removidos.
+- Comparação antes/depois de 12 experimentos tradicionais, 12 variantes de
+  coleta (normal/smoke) e 120 configurações Johann: igualdade, permitindo apenas
+  as duas referências de treinadores de coleta deliberadamente migradas.
+- Os 36 planos completos de estoque/liberação (seis clientes em seis casos)
+  preservaram os identificadores, os metadados e os hashes da versão anterior.
+- As 12 exportações tradicionais foram geradas e aceitas pelo Docker Compose.
+- **20 smokes Docker passaram**: 12 Thiago tradicionais de um round, seis de
+  coleta de cinco rounds e dois Johann M0 de 20 segundos. Os primeiros 18 usam
+  seis clientes; os dois Johann usam oito clientes cada.
+- Conferência de auditorias, contagens, pesos, métricas finitas, checkpoints,
+  matrizes de confusão e resumos. Os 18 smokes por rounds não tiveram erros de
+  vizinhança. Os planos de coleta Docker coincidem com os do smoke original.
+- As imagens foram reconstruídas com Python 3.11 e sem as três dependências
+  diretas retiradas. Os contêineres e as redes de teste foram encerrados.
+
+As evidências desta etapa estão em `results/reorganization/` (ignorado):
+`equivalence.json`, `before.json`, `after.json`, `pytest-final.log`,
+`docker-summary.json`, `image-checks.json`, `exports/` e `docker/`, além dos
+logs `docker-*.log`. O identificador dos smokes foi `reorganization-20261031`.
+Datasets, resultados, imagens anteriores e entregáveis de pesquisa foram
+preservados. Os testes sintéticos e fixtures exclusivos das famílias removidas
+foram retirados do código ativo.

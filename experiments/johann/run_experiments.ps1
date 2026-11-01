@@ -5,6 +5,7 @@ param(
     [switch]$All,
     [int[]]$Seeds,
     [ValidateSet("M0", "M1", "M2", "M3", "M4")][string[]]$Methods = @("M0"),
+    [string]$FrozenBundle,
     [string]$RunId = (Get-Date -Format "yyyyMMdd-HHmmss")
 )
 
@@ -17,6 +18,7 @@ if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
 }
 $arguments = @($runner, $Mode, "--dataset", $Dataset, "--run-id", $RunId)
 $arguments += "--methods"; $arguments += $Methods
+if ($FrozenBundle) { $arguments += @("--frozen-bundle", $FrozenBundle) }
 if ($All) { $arguments += "--all" } else { $arguments += @("--scenario", $Scenario) }
 if ($Seeds) { $arguments += "--seeds"; $arguments += $Seeds }
 Push-Location -LiteralPath $repo

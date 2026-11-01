@@ -13,11 +13,11 @@
   },
   "datasets": {
     "mnist": {
-      "trainer_module": "experiments.simulated_collection.mnist",
+      "trainer_module": "experiments.mnist.trainer",
       "dockerfile": "experiments/thiago-coleta-simulada/Dockerfile"
     },
     "cifar10": {
-      "trainer_module": "experiments.simulated_collection.cifar10",
+      "trainer_module": "experiments.cifar10.trainer",
       "dockerfile": "experiments/thiago-coleta-simulada/Dockerfile"
     },
     "harth": {

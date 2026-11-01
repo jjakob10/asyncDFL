@@ -136,11 +136,11 @@ participante. Os clientes leem arrays com memory mapping. Também é possível
 preparar dados locais e validar sem Docker:
 
 ```powershell
-& $python -m experiments.simulated_collection.prepare_data --dataset harth --data-dir results/coleta-data
+& $python -m scripts.experiment_tools.prepare_data --trainer-module experiments.harth.trainer --data-dir results/coleta-data
 & $python $runner validate --all --dataset harth --data-dir results/coleta-data --run-id verificacao-local
 ```
 
-Para MNIST/CIFAR-10, o mesmo módulo de preparação aceita o nome do dataset.
+Para MNIST/CIFAR-10, o mesmo módulo de preparação aceita o módulo do treinador correspondente.
 Dados e downloads devem permanecer em `results/` ou fora do repositório.
 
 ## Auditoria e compatibilidade
@@ -165,3 +165,23 @@ As novas configurações são `COLLECTION_MODE` (`disabled`, `accumulative` ou
 `collection_source` no `DataBundle` do treinador e execução por rounds.
 Sem configurar o recurso, os treinadores, Composes, pesos mínimos e o runtime
 temporal dos experimentos anteriores mantêm seu comportamento.
+
+
+## Organização do código
+
+Os treinadores são `experiments.mnist.trainer`, `experiments.cifar10.trainer`
+e `experiments.harth.trainer`. Os dois treinadores de imagem fornecem o estoque
+somente quando a coleta está habilitada. Não há um segundo treinador ou modelo
+para os modos de retenção.
+
+As funções reutilizáveis ficam em `scripts.experiment_tools`: `catalog` e
+`topology` descrevem experimentos; `compose` gera os serviços; `collection`
+acrescenta a configuração de coleta; `validation` valida os estoques;
+`execution` monitora e encerra redes; `reporting` gera resumos; `prepare_data`
+invoca a preparação oferecida pelo treinador. A lógica de chegadas e retenção
+permanece em `app.collection`.
+
+Os executores de dados fixos e de coleta continuam separados. Manifestos e
+Composes novos usam os módulos originais dos treinadores. Configurações geradas
+antes da reorganização devem ser regeneradas; seus resultados continuam
+legíveis e não são modificados pela migração.

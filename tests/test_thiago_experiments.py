@@ -12,11 +12,13 @@ from torch.utils.data import DataLoader, TensorDataset
 from app.config import Settings, parse_client_classes
 from app.runtime import ClientRuntime
 from app.training import DataBundle, class_distribution, make_partitions
-from experiments.paper.catalog import build_catalog, load_manifest
+from scripts.experiment_tools.catalog import build_catalog, load_manifest
 from scripts.plot_metrics import (
     MetricsPlotError, load_experiments, plot_class_distribution, plot_metrics,
 )
-from scripts.run_paper_experiments import main as runner_main, render_compose, summarize_run
+from scripts.run_experiments import main as runner_main
+from scripts.experiment_tools.execution import render_compose
+from scripts.experiment_tools.reporting import summarize_run
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -228,14 +230,6 @@ def test_runtime_writes_training_distribution_before_rounds(tmp_path) -> None:
     assert raw["client_id"] == 0 and raw["run_id"] == "test"
 
 
-def test_ecg_rejects_manual_before_opening_data() -> None:
-    from experiments.ecg.trainer import load_data
-
-    config = Settings(client_id=0, client_name="client-0", partition_mode="manual")
-    with pytest.raises(ValueError, match="multilabel ECG"):
-        load_data(config)
-
-
 @pytest.mark.parametrize("dataset", ["mnist", "cifar10"])
 def test_image_manual_metadata_matches_capped_training_data(dataset, monkeypatch) -> None:
     from importlib import import_module
@@ -277,7 +271,7 @@ def test_image_manual_metadata_matches_capped_training_data(dataset, monkeypatch
 def test_manifest_execution_commands_use_results_root_without_starting_containers(
     command, tmp_path, monkeypatch,
 ) -> None:
-    from scripts import run_paper_experiments as runner
+    from scripts import run_experiments as runner
 
     data = load_manifest(ROOT / "experiments/thiago/mnist/manifest.json")
     data["results_root"] = str(tmp_path / "results")
@@ -296,7 +290,7 @@ def test_manifest_execution_commands_use_results_root_without_starting_container
         calls.append(experiment.experiment_id)
         return 0
 
-    monkeypatch.setattr(runner, "_run_compose", fake_run)
+    monkeypatch.setattr(runner, "run_compose", fake_run)
     assert runner.main([command, "--all", "--manifest", str(manifest), "--run-id", "test"]) == 0
     assert len(calls) == len(set(calls)) == 6
 

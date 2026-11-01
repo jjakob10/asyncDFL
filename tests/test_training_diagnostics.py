@@ -10,8 +10,6 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from experiments.mnist import trainer as mnist
 from experiments.cifar10 import trainer as cifar
-from experiments.ton_iot import trainer as ton
-from experiments.ecg import trainer as ecg
 from scripts.plot_metrics import (
     MetricsPlotError, build_contribution_matrix, load_experiments, load_topology,
     neighbor_axis_maximum, plot_class_recall, plot_contributions, plot_metrics,
@@ -21,8 +19,6 @@ from scripts.plot_metrics import (
 @pytest.mark.parametrize("trainer,inputs,targets,expected", [
     (mnist, [[9., 0., 0.], [0., 9., 0.], [0., 9., 0.]], [0, 0, 1], [.5, 1., 0.]),
     (cifar, [[9., 0., 0.], [0., 9., 0.], [0., 9., 0.]], [0, 0, 1], [.5, 1., 0.]),
-    (ton, [-9., 9., 0.], [0., 0., 1.], [.5, 1.]),
-    (ecg, [[-9., 9.], [9., -9.], [0., -9.]], [[0., 1.], [0., 1.], [1., 0.]], [1., .5]),
 ])
 @pytest.mark.parametrize("empty", [False, True])
 def test_recall_uses_existing_evaluation_pass(monkeypatch, trainer, inputs, targets, expected, empty):
@@ -34,8 +30,6 @@ def test_recall_uses_existing_evaluation_pass(monkeypatch, trainer, inputs, targ
             return value
 
     monkeypatch.setattr(trainer, "create_model", CountingModel)
-    if trainer is ecg:
-        monkeypatch.setattr(trainer, "CLASS_COUNT", 2)
     x, y = torch.tensor(inputs), torch.tensor(targets)
     if empty:
         x, y = x[:0], y[:0]

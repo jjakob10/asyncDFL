@@ -12,7 +12,7 @@ COPY experiments ./experiments
 COPY scripts ./scripts
 ARG DATASET
 RUN --mount=type=cache,target=/dataset-cache,sharing=locked \
-    python -m experiments.simulated_collection.prepare_data --dataset "$DATASET" --data-dir "/dataset-cache/$DATASET" \
+    python -m scripts.experiment_tools.prepare_data --trainer-module "experiments.$DATASET.trainer" --data-dir "/dataset-cache/$DATASET" \
     && mkdir -p /data /results \
     && if [ "$DATASET" = "harth" ]; then \
          mkdir -p /data/harth && cp -a /dataset-cache/harth/harth/prepared /data/harth/prepared; \

@@ -27,7 +27,7 @@ ENV API_PORT=9000
 ENV TRAINER_MODULE=experiments.cifar10.trainer
 
 RUN mkdir -p /data /results \
-    && python -c "from torchvision.datasets import CIFAR10; CIFAR10.url = 'https://huggingface.co/datasets/xingslong/cifar-10-batches-py/resolve/main/cifar-10-python.tar.gz'; CIFAR10('/data', train=True, download=True); CIFAR10('/data', train=False, download=True)"
+    && python -c "from pathlib import Path; from experiments.cifar10.trainer import prepare_data; prepare_data(Path('/data'))"
 
 EXPOSE 9000
 VOLUME ["/results"]

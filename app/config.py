@@ -89,7 +89,6 @@ class Settings:
     component_id: int = 0
     component_size: int = 1
     paper_role: str = "R"
-    ton_iot_path: str = ""
     client_classes: dict[int, tuple[int, ...]] = field(default_factory=dict)
     run_duration_seconds: float = 0.0
     evaluation_interval_seconds: float = 10.0
@@ -177,7 +176,6 @@ class Settings:
             component_id=int(os.getenv("COMPONENT_ID", "0")),
             component_size=int(os.getenv("COMPONENT_SIZE", "1")),
             paper_role=os.getenv("PAPER_ROLE", "R").strip().upper(),
-            ton_iot_path=os.getenv("TON_IOT_PATH", "").strip(),
             client_classes=parse_client_classes(
                 json.loads(os.getenv("CLIENT_CLASSES", "{}")), client_count
             ),

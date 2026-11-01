@@ -1,6 +1,7 @@
 """Resolved Johann specifications and shared Compose generation."""
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 import math
 from pathlib import Path
@@ -8,8 +9,9 @@ from typing import Any
 
 from app.aggregation import AGE_UNIT, METHODS
 
-from experiments.paper.catalog import PaperExperiment, resolve_clients
-from scripts.experiment_compose import build_compose
+from scripts.experiment_tools.catalog import ExperimentSpec
+from scripts.experiment_tools.topology import resolve_clients
+from scripts.experiment_tools.compose import build_compose
 
 ROOT = Path(__file__).resolve().parents[2]
 SCENARIOS = tuple(f"{d}-{a}" for d in ("distributed", "concentrated") for a in ("r", "c", "none"))
@@ -39,10 +41,12 @@ def validate_topology(edges: tuple[tuple[int, int], ...]) -> None:
 
 def load_spec(dataset: str, scenario: str, seed: int = 7, duration: float | None = None,
               interval: float | None = None, mode: str = "pilot", method: str = "M0",
-              method_parameters: dict | None = None) -> dict[str, Any]:
+              method_parameters: dict | None = None, *,
+              base_manifest: dict | None = None) -> dict[str, Any]:
     if dataset not in {"mnist", "cifar10"} or scenario not in SCENARIOS:
         raise ValueError("unsupported Johann dataset or scenario")
-    spec = json.loads((Path(__file__).parent / dataset / "manifest.json").read_text(encoding="utf-8"))
+    spec = (deepcopy(base_manifest) if base_manifest is not None else
+            json.loads((Path(__file__).parent / dataset / "manifest.json").read_text(encoding="utf-8")))
     required = {"dataset": dataset, "client_count": 8, "tracked_classes": [3, 8],
                 "group_r": [0, 4], "group_c": [2, 6], "validation_fraction": .1,
                 "concentration_fraction": .8, "scenarios": list(SCENARIOS)}
@@ -107,7 +111,7 @@ def load_spec(dataset: str, scenario: str, seed: int = 7, duration: float | None
 def compose_for(spec: dict[str, Any], run_id: str, directory: Path) -> dict[str, Any]:
     dataset = spec["dataset"]
     edges = topology()
-    experiment = PaperExperiment(
+    experiment = ExperimentSpec(
         experiment_id=f"johann-{dataset}-{spec['method']}-{spec['scenario']}", dataset=dataset,
         trainer_module=f"experiments.johann.{dataset}.trainer",
         dockerfile=f"experiments/{dataset}/Dockerfile", topology_name="ring-opposites",
@@ -117,9 +121,16 @@ def compose_for(spec: dict[str, Any], run_id: str, directory: Path) -> dict[str,
         clients=resolve_clients(8, edges, (), ()),
     )
     compose = build_compose(experiment, run_id, directory)
+    if spec.get("frozen_bundle"):
+        # Compose normalizes project names; record the same name used in engine labels.
+        compose["name"] = compose["name"].lower()
     # Same Dockerfiles and build cache; separate tags prevent replacing legacy images.
     for service in compose["services"].values():
         service["image"] = f"dfl-johann-{dataset}:latest"
+        if spec.get("frozen_bundle"):
+            service["image"] = spec["expected_image_id"]
+            service.pop("build", None)
+            service["pull_policy"] = "never"
         service["environment"].update({
             "RUN_DURATION_SECONDS": str(spec["duration_seconds"]),
             "EVALUATION_INTERVAL_SECONDS": str(spec["evaluation_interval_seconds"]),
