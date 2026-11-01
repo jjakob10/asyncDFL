@@ -122,32 +122,7 @@ def test_image_compose_configuration(
         assert "os.environ['API_PORT']" in service["healthcheck"]["test"][3]
 
 
-@pytest.mark.parametrize("count", [4, 8])
-def test_ecg_compose_ports(docker_compose, tmp_path, count) -> None:
-    env_file = tmp_path / "empty.env"
-    env_file.write_text("")
-    result = subprocess.run(
-        [docker_compose, "compose", "--env-file", str(env_file), "-f",
-         str(ROOT / "experiments/ecg" / f"compose.ring.{count}.yaml"),
-         "config", "--format", "json"],
-        capture_output=True, text=True, timeout=30,
-    )
-    assert result.returncode == 0, result.stderr
-    services = json.loads(result.stdout)["services"]
-    assert len(services) == count
-    for client_id in range(count):
-        service = services[f"client-{client_id}"]
-        assert service["environment"]["API_PORT"] == "9000"
-        assert service["ports"][0]["target"] == 9000
-        assert str(service["ports"][0]["published"]) == str(8000 + client_id)
-        assert all(
-            url.endswith(":9000")
-            for url in service["environment"]["NEIGHBORS"].split(",")
-        )
-        assert "os.environ['API_PORT']" in service["healthcheck"]["test"][3]
-
-
-@pytest.mark.parametrize("dataset", ["mnist", "cifar10", "ecg", "ton_iot"])
+@pytest.mark.parametrize("dataset", ["mnist", "cifar10"])
 def test_image_start_command_and_healthcheck(monkeypatch, dataset) -> None:
     import urllib.request
 

@@ -12,6 +12,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 from app.config import Settings, parse_client_classes
+from app.collection import CollectionSource
 from app.federation import StateDict
 
 
@@ -21,6 +22,7 @@ class DataBundle:
     test_loader: DataLoader
     sample_count: int
     class_distribution: dict[str, Any] | None = None
+    collection_source: CollectionSource | None = None
 
 
 def class_distribution(

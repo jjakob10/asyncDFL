@@ -1,1 +1,0 @@
-"""FedCVD ECG experiment."""

@@ -27,7 +27,7 @@ ENV API_PORT=9000
 ENV TRAINER_MODULE=experiments.mnist.trainer
 
 RUN mkdir -p /data /results \
-    && python -c "from torchvision.datasets import MNIST; MNIST('/data', train=True, download=True); MNIST('/data', train=False, download=True)"
+    && python -c "from pathlib import Path; from experiments.mnist.trainer import prepare_data; prepare_data(Path('/data'))"
 
 EXPOSE 9000
 VOLUME ["/results"]

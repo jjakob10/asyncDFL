@@ -16,8 +16,8 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
-from experiments.paper.catalog import build_catalog, load_manifest
-from scripts.experiment_compose import build_compose
+from scripts.experiment_tools.catalog import build_catalog, load_manifest, reject_collection_manifest
+from scripts.experiment_tools.compose import build_compose
 
 
 CLIENT_ENVIRONMENT_KEYS = {
@@ -57,12 +57,12 @@ def export_manifest(
     output: Path,
     run_id: str | None = None,
     smoke: bool = False,
-    ton_iot_path: Path | None = None,
 ) -> list[Path]:
     """Validate the entire export before writing to a new or empty directory."""
     data = load_manifest(manifest_path)
     if not data:
         raise ValueError("manifest must not be empty")
+    reject_collection_manifest(data)
     experiments = build_catalog(data)
     if not experiments:
         raise ValueError("manifest contains no experiments")
@@ -72,15 +72,10 @@ def export_manifest(
     if run_id is None:
         run_id = datetime.now(timezone.utc).strftime("export-%Y%m%dT%H%M%S%fZ")
     _validate_id(run_id, "run ID", r"[A-Za-z0-9][A-Za-z0-9_-]*")
-    results_root_value = data.get("results_root", "results/paper")
+    results_root_value = data.get("results_root", "results/experiments")
     if not isinstance(results_root_value, str) or not results_root_value.strip():
         raise ValueError("manifest results_root must be a nonempty path string")
     results_root = (REPOSITORY_ROOT / results_root_value).resolve()
-    if any(item.dataset == "ton_iot" for item in experiments):
-        if ton_iot_path is None or not ton_iot_path.is_file():
-            raise ValueError("--ton-iot-path must point to the external TON_IOT CSV file")
-        ton_iot_path = ton_iot_path.resolve()
-
     files: dict[Path, str] = {}
     seen_ids: set[str] = set()
     for experiment in experiments:
@@ -88,7 +83,7 @@ def export_manifest(
         if experiment.experiment_id in seen_ids:
             raise ValueError(f"duplicate experiment ID: {experiment.experiment_id}")
         seen_ids.add(experiment.experiment_id)
-        if experiment.dataset not in {"mnist", "cifar10", "ton_iot"}:
+        if experiment.dataset not in {"mnist", "cifar10", "harth"}:
             raise ValueError(f"unsupported export dataset: {experiment.dataset}")
         dockerfile = (REPOSITORY_ROOT / experiment.dockerfile).resolve()
         if not dockerfile.is_relative_to(REPOSITORY_ROOT) or not dockerfile.is_file():
@@ -96,7 +91,7 @@ def export_manifest(
         directory = output / experiment.experiment_id
         result_directory = results_root / experiment.experiment_id
         compose = build_compose(
-            experiment, run_id, result_directory / run_id, smoke, ton_iot_path,
+            experiment, run_id, result_directory / run_id, smoke,
         )
         shared: dict[str, str] | None = None
         for client in experiment.clients:
@@ -121,13 +116,6 @@ def export_manifest(
                 "target": "/results",
                 "bind": {"create_host_path": True},
             }]
-            if experiment.dataset == "ton_iot":
-                assert ton_iot_path is not None
-                service["volumes"].append({
-                    "type": "bind", "source": "${EXPORT_TON_IOT_PATH}",
-                    "target": "/data/ton_iot/Train_Test_Network.csv", "read_only": True,
-                    "bind": {"create_host_path": False},
-                })
             if "build" in service:
                 service["build"] = {
                     "context": "${EXPORT_BUILD_CONTEXT}",
@@ -138,9 +126,6 @@ def export_manifest(
             "EXPORT_DOCKERFILE": dockerfile.relative_to(REPOSITORY_ROOT).as_posix(),
             "EXPORT_RESULTS_BASE": _relative_path(result_directory, directory),
         }
-        if experiment.dataset == "ton_iot":
-            assert ton_iot_path is not None
-            host_paths["EXPORT_TON_IOT_PATH"] = _relative_path(ton_iot_path, directory)
         files[directory / ".env"] = _dotenv({**(shared or {}), **host_paths})
         # JSON is a YAML subset accepted by Docker Compose, avoiding a new dependency.
         files[directory / "compose.yaml"] = json.dumps(compose, indent=2) + "\n"
@@ -158,7 +143,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--run-id", help="shared execution ID (default: UTC timestamp)")
     parser.add_argument("--smoke", action="store_true", help="use the runner's capped smoke settings")
-    parser.add_argument("--ton-iot-path", type=Path, help="external TON_IOT CSV to mount read-only")
     return parser
 
 
@@ -166,7 +150,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         directories = export_manifest(
-            args.manifest, args.output, args.run_id, args.smoke, args.ton_iot_path,
+            args.manifest, args.output, args.run_id, args.smoke,
         )
     except (KeyError, OSError, TypeError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)

@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "selection": "chronological",
+  "clients": {
+    "0": [
+      {
+        "rounds": [
+          1,
+          5
+        ],
+        "count": 2
+      }
+    ],
+    "1": [
+      {
+        "rounds": [
+          1,
+          5
+        ],
+        "count": 2
+      }
+    ],
+    "2": [
+      {
+        "rounds": [
+          1,
+          5
+        ],
+        "count": 2
+      }
+    ],
+    "3": [
+      {
+        "rounds": [
+          1,
+          5
+        ],
+        "count": 2
+      }
+    ],
+    "4": [
+      {
+        "rounds": [
+          1,
+          5
+        ],
+        "count": 2
+      }
+    ],
+    "5": [
+      {
+        "rounds": [
+          1,
+          5
+        ],
+        "count": 2
+      }
+    ]
+  }
+}

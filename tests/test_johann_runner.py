@@ -42,7 +42,7 @@ def test_schedule_requires_all_acknowledgements_before_start(monkeypatch):
         runner.schedule_run("test")
 
 
-@pytest.mark.parametrize("command,expected_split", [("smoke", "validation"), ("pilot", "validation"), ("run", "test")])
+@pytest.mark.parametrize("command,expected_split", [("smoke", "validation"), ("pilot", "validation")])
 def test_commands_prepare_requested_network_without_docker(command, expected_split, tmp_path, monkeypatch):
     calls = []
 

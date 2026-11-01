@@ -1,0 +1,84 @@
+{
+  "results_root": "results/thiago-coleta-simulada",
+  "defaults": {
+    "client_count": 6,
+    "rounds": 10,
+    "local_epochs": 1,
+    "batch_size": 64,
+    "learning_rate": 0.01,
+    "momentum": 0.9,
+    "seed": 42,
+    "partition_mode": "iid",
+    "min_partition_size": 100
+  },
+  "datasets": {
+    "mnist": {
+      "trainer_module": "experiments.mnist.trainer",
+      "dockerfile": "experiments/thiago-coleta-simulada/Dockerfile"
+    },
+    "cifar10": {
+      "trainer_module": "experiments.cifar10.trainer",
+      "dockerfile": "experiments/thiago-coleta-simulada/Dockerfile"
+    },
+    "harth": {
+      "trainer_module": "experiments.harth.trainer",
+      "dockerfile": "experiments/thiago-coleta-simulada/Dockerfile"
+    }
+  },
+  "experiments": [
+    {
+      "experiment_id": "thiago-coleta-simulada-mnist-ring-6-accumulative",
+      "dataset": "mnist",
+      "topology_name": "ring",
+      "collection_mode": "accumulative",
+      "window_rounds": 3,
+      "schedule": "agendas/mnist.json",
+      "smoke_schedule": "agendas/mnist-smoke.json"
+    },
+    {
+      "experiment_id": "thiago-coleta-simulada-mnist-ring-6-sliding-window",
+      "dataset": "mnist",
+      "topology_name": "ring",
+      "collection_mode": "sliding_window",
+      "window_rounds": 3,
+      "schedule": "agendas/mnist.json",
+      "smoke_schedule": "agendas/mnist-smoke.json"
+    },
+    {
+      "experiment_id": "thiago-coleta-simulada-cifar10-ring-6-accumulative",
+      "dataset": "cifar10",
+      "topology_name": "ring",
+      "collection_mode": "accumulative",
+      "window_rounds": 3,
+      "schedule": "agendas/cifar10.json",
+      "smoke_schedule": "agendas/cifar10-smoke.json"
+    },
+    {
+      "experiment_id": "thiago-coleta-simulada-cifar10-ring-6-sliding-window",
+      "dataset": "cifar10",
+      "topology_name": "ring",
+      "collection_mode": "sliding_window",
+      "window_rounds": 3,
+      "schedule": "agendas/cifar10.json",
+      "smoke_schedule": "agendas/cifar10-smoke.json"
+    },
+    {
+      "experiment_id": "thiago-coleta-simulada-harth-ring-6-accumulative",
+      "dataset": "harth",
+      "topology_name": "ring",
+      "collection_mode": "accumulative",
+      "window_rounds": 3,
+      "schedule": "agendas/harth.json",
+      "smoke_schedule": "agendas/harth-smoke.json"
+    },
+    {
+      "experiment_id": "thiago-coleta-simulada-harth-ring-6-sliding-window",
+      "dataset": "harth",
+      "topology_name": "ring",
+      "collection_mode": "sliding_window",
+      "window_rounds": 3,
+      "schedule": "agendas/harth.json",
+      "smoke_schedule": "agendas/harth-smoke.json"
+    }
+  ]
+}

@@ -8,10 +8,9 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from app.config import Settings
 from app.runtime import ClientRuntime
+from app.training import classification_confusion
 from experiments.mnist import trainer as mnist
 from experiments.cifar10 import trainer as cifar
-from experiments.ecg import trainer as ecg
-from experiments.ton_iot import trainer as ton
 from tests.test_runtime import TinyTrainer, tiny_data
 
 
@@ -20,14 +19,9 @@ from tests.test_runtime import TinyTrainer, tiny_data
      [0, 0, 1], [[1, 1, 0], [0, 1, 0], [0, 0, 0]]),
     (cifar, "multiclass", [[9, 0, 0], [0, 9, 0], [0, 9, 0]],
      [0, 0, 1], [[1, 1, 0], [0, 1, 0], [0, 0, 0]]),
-    (ton, "binary", [-9, 9, 0], [0, 0, 1], [[1, 1], [0, 1]]),
-    (ecg, "multilabel", [[-9, 9], [9, -9], [0, -9]],
-     [[0, 1], [0, 1], [1, 0]], [[[1, 1], [0, 1]], [[1, 0], [1, 1]]]),
 ])
 def test_trainer_confusion_counts(monkeypatch, trainer, kind, inputs, targets, expected):
     monkeypatch.setattr(trainer, "create_model", nn.Identity)
-    if trainer is ecg:
-        monkeypatch.setattr(trainer, "CLASS_COUNT", 2)
     loader = DataLoader(TensorDataset(torch.tensor(inputs, dtype=torch.float32),
                                     torch.tensor(targets)), batch_size=2)
     result = trainer.evaluate_confusion({}, loader)
@@ -138,14 +132,13 @@ def test_confusion_evaluation_failure_marks_run_failed(tmp_path):
     assert "invalid predictions" in runtime.status()["recent_errors"][-1]["message"]
 
 
-def test_no_gradient_tracking_and_empty_test_set(monkeypatch):
+def test_no_gradient_tracking_and_empty_test_set():
     class CheckIdentity(nn.Module):
         def forward(self, inputs):
             assert not torch.is_grad_enabled()
             assert not self.training
             return inputs
-    monkeypatch.setattr(ton, "create_model", CheckIdentity)
     loader = DataLoader(TensorDataset(torch.tensor([0.0]), torch.tensor([1.0])))
-    assert ton.evaluate_confusion({}, loader)["counts"] == [[0, 0], [0, 1]]
+    assert classification_confusion(CheckIdentity(), {}, loader, "binary", ["0", "1"])["counts"] == [[0, 0], [0, 1]]
     empty = DataLoader(TensorDataset(torch.empty(0), torch.empty(0)))
-    assert ton.evaluate_confusion({}, empty)["counts"] == [[0, 0], [0, 0]]
+    assert classification_confusion(CheckIdentity(), {}, empty, "binary", ["0", "1"])["counts"] == [[0, 0], [0, 0]]

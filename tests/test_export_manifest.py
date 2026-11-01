@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from experiments.paper.catalog import build_catalog, load_manifest
-from scripts.experiment_compose import build_compose
+from scripts.experiment_tools.catalog import build_catalog, load_manifest
+from scripts.experiment_tools.compose import build_compose
 from scripts.export_manifest import export_manifest, main
 
 
@@ -83,35 +83,6 @@ def test_changing_run_id_and_training_settings_changes_effective_compose(tmp_pat
         assert Path(service["volumes"][0]["source"]).name == "second-run"
 
 
-def test_paper_manifest_exports_all_configs_and_preserves_control_clients(tmp_path) -> None:
-    manifest = ROOT / "experiments/paper/manifest.json"
-    csv_path = tmp_path / "external data $cache's" / "Train_Test_Network.csv"
-    csv_path.parent.mkdir()
-    csv_path.write_text("ts,type,label\n1,normal,0\n", encoding="utf-8")
-    directories = export_manifest(manifest, tmp_path / "paper", "paper-run", ton_iot_path=csv_path)
-    assert len(directories) == 158
-    catalog = build_catalog(load_manifest(manifest))
-    for experiment, directory in zip(catalog, directories):
-        common = raw_environment(directory / ".env")
-        assert common["PARTITION_MODE"] == "iid"
-        expected = build_compose(experiment, "paper-run", tmp_path, ton_iot_path=csv_path)
-        for client in experiment.clients:
-            individual = raw_environment(directory / "env" / f"client_{client.client_id}.env")
-            shared = {key: value for key, value in common.items() if not key.startswith("EXPORT_")}
-            assert {**shared, **individual} == expected["services"][f"client-{client.client_id}"]["environment"]
-    for experiment_id in ("mnist-8p2-top4-e32", "cifar10-8p2-top0-e2", "ton_iot-8p2-top4-e32"):
-        compose = compose_config(tmp_path / "paper" / experiment_id)
-        assert compose["services"]["client-9"]["environment"]["NEIGHBORS"] == ""
-        assert compose["services"]["client-9"]["environment"]["PAPER_ROLE"] == "ED"
-        assert compose["services"]["client-0"]["environment"]["EMPTY_CLIENT_IDS"] == "0,4,9"
-        if experiment_id.startswith("ton_iot"):
-            mount = compose["services"]["client-0"]["volumes"][1]
-            # Canonical Compose output escapes dollars for reuse as a Compose file.
-            assert Path(mount["source"].replace("$$", "$")) == csv_path
-            assert mount["read_only"] is True
-            assert mount["bind"]["create_host_path"] is False
-
-
 def test_smoke_cli_and_default_timestamp(tmp_path) -> None:
     manifest = ROOT / "experiments/thiago/mnist/manifest.json"
     output = tmp_path / "smoke"
@@ -167,13 +138,18 @@ def test_invalid_run_id_does_not_create_output(tmp_path, run_id) -> None:
     assert not output.exists()
 
 
-def test_missing_external_dataset_and_malformed_json_leave_output_unchanged(tmp_path) -> None:
+def test_malformed_json_leaves_output_unchanged(tmp_path) -> None:
     output = tmp_path / "output"
     output.mkdir()
-    with pytest.raises(ValueError, match="ton-iot-path"):
-        export_manifest(ROOT / "experiments/paper/manifest.json", output)
-    assert list(output.iterdir()) == []
     manifest = tmp_path / "bad.json"
     manifest.write_text("{", encoding="utf-8")
     assert main(["--manifest", str(manifest), "--output", str(output)]) == 2
     assert list(output.iterdir()) == []
+
+
+def test_collection_export_is_rejected_before_writing(tmp_path) -> None:
+    output = tmp_path / "export"
+    manifest = ROOT / "experiments/thiago-coleta-simulada/manifest.json"
+    with pytest.raises(ValueError, match="run_collection_experiments"):
+        export_manifest(manifest, output)
+    assert not output.exists()

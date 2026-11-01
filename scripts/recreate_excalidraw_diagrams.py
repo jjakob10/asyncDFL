@@ -350,7 +350,7 @@ def architecture_diagram() -> Canvas:
         size=28,
     )
     c.rect(759, 1069, 658, 117, purple, "#e5dbff", stroke_width=3)
-    c.text(796, 1104, "MNIST / CIFAR-10 / TON_IOT trainer", purple, size=26)
+    c.text(796, 1104, "MNIST / CIFAR-10 / HARTH trainer", purple, size=26)
 
     c.rect(1582, 705, 675, 474, green, green_fill, stroke_width=3)
     c.text(1613, 736, "Federation – app.federation", green, size=38)
